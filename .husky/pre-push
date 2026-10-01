@@ -1,0 +1,1 @@
+bun run build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bun run lint

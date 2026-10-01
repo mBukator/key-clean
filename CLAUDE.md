@@ -38,7 +38,7 @@ These override everything, including my own prompts. If a request conflicts with
 - Tauri 2, Windows x64 only. Rust stable with the `windows` crate for Win32.
 - UI: React + TypeScript (strict) + Vite + Tailwind v4; `motion` only for small transitions. Not Next.js — Tauri needs a static SPA.
 - Official Tauri plugins where they exist (single-instance, global-shortcut, autostart, notification, store). Every new dependency gets a one-line justification in the commit message or an ADR.
-- Package manager: pnpm.
+- Package manager: bun (ADR 0001). Never pnpm, npm or yarn.
 
 ## Layout (maps to the §49 layers)
 
@@ -71,8 +71,21 @@ docs/  scripts/  assets/
 - Verify Win32 and Tauri APIs against official docs (learn.microsoft.com, docs.rs, v2.tauri.app) rather than memory, and link sources in research notes. Tag claims [docs], [tested], or [assumption].
 - Any deviation from `docs/SPEC.md` or this file needs an ADR: `docs/decisions/NNNN-title.md` (context, decision, alternatives, consequences).
 - After each milestone: update ROADMAP checkboxes, `CHANGELOG.md` (Unreleased), and the Commands section below, then give a handoff summary — what changed, how to test, risks, open questions.
-- Git: small commits, Conventional Commits with scopes (engine, core, app, ui, i18n, docs, ci). Never push, never rewrite history.
 - Keep this file under ~200 lines; detail belongs in `docs/`.
+
+## Git workflow (MUST)
+
+Full rules and examples: `docs/development/git-workflow.md`. Enforced by commitlint + husky.
+
+1. Conventional Commits `<type>(<scope>): <subject>`. Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+2. Scope required: `engine`, `core`, `app`, `ui`, `i18n`, `docs`, `ci`, `repo` (root tooling/config), `deps`.
+3. Subject: imperative, lowercase first letter, no trailing period, header ≤72 chars.
+4. Every commit has a body: blank line, wrapped ~72, what and why (not how), bullets for multiple changes. New dependencies get a one-line justification there.
+5. Never mention Claude or AI in commits or PRs — no `Co-Authored-By` trailer, no session links. Hyphens, not em/en dashes, in commit messages and PR text.
+6. `main` (tagged releases) and `develop` (integration) are protected. Work branches come off `develop`: `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`; `hotfix/*` comes off `main`.
+7. PRs target `develop`, fill `.github/pull_request_template.md` completely, use a Conventional Commits title, and are squash-merged after CI passes. Issues use the templates.
+8. Claude may push work branches and open PRs (`gh pr create`). Never push to `main`/`develop`, never merge, never force-push, never rewrite history, never `--no-verify` — fix a broken hook instead.
+9. Before a PR: `cargo fmt --all --check && bun run build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bun run typecheck && bun run lint && bun run format:check`.
 
 ## Code standards
 
@@ -83,7 +96,22 @@ docs/  scripts/  assets/
 
 ## Commands
 
-_(Fill in after scaffolding: dev, build, bundle, test, lint, typecheck.)_
+```
+bun install                  # deps + husky hooks
+bun tauri dev                # run the app (Max only — it can engage a real lock)
+bun run build                # frontend → dist/ (src-tauri needs dist/ to compile)
+bun tauri build              # release build; bundling is off until the packaging milestone
+cargo test --workspace       # pure-logic tests (never installs hooks)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all              # / --check
+bun run typecheck
+bun run lint
+bun run format               # / format:check
+bunx merlin                  # interactive commit wizard
+cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock
+```
+
+If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).
 
 ## Out of scope unless I say otherwise
 

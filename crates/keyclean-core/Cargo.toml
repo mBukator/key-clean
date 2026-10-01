@@ -1,0 +1,14 @@
+[package]
+name = "keyclean-core"
+description = "Pure session logic for KeyClean: state machine, timers, safety policy, chord detection."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

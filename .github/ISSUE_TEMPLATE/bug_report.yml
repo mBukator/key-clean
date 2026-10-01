@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in KeyClean did not work as expected.
+labels: ["bug"]
+body:
+    - type: markdown
+      attributes:
+          value: |
+              Thanks for reporting. **Never paste text you typed during or around a lock session**, and never include key codes or key logs. Describe what happened in your own words instead.
+    - type: input
+      id: windows
+      attributes:
+          label: Windows version and build
+          description: Run `winver` to find it, for example "Windows 11 23H2 (22631.4317)".
+      validations:
+          required: true
+    - type: input
+      id: version
+      attributes:
+          label: KeyClean version
+          placeholder: "0.1.0"
+      validations:
+          required: true
+    - type: dropdown
+      id: locked
+      attributes:
+          label: What was locked?
+          options:
+              - Keyboard
+              - Mouse
+              - Touchpad
+              - Keyboard and pointing devices
+              - Nothing (bug outside a lock session)
+      validations:
+          required: true
+    - type: textarea
+      id: what-happened
+      attributes:
+          label: What happened?
+          description: Steps to reproduce, what you expected, and what happened instead.
+      validations:
+          required: true
+    - type: dropdown
+      id: input-returned
+      attributes:
+          label: Did input come back?
+          options:
+              - "Yes - the session timer ended"
+              - "Yes - Ctrl+Alt+K emergency unlock"
+              - "Yes - something else (describe below)"
+              - "No - I had to restart or sign out"
+              - "Not applicable"
+      validations:
+          required: true
+    - type: textarea
+      id: how-returned
+      attributes:
+          label: How did you get control back?
+          description: Only if you picked "something else" or "No" above.
+    - type: textarea
+      id: logs
+      attributes:
+          label: Technical details
+          description: Paste the text from "View technical details" if KeyClean showed an error. Do not paste anything you typed.
+          render: text
