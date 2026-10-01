@@ -1894,6 +1894,13 @@ name = "keyclean-core"
 version = "0.1.0"
 
 [[package]]
+name = "keyclean-e2e"
+version = "0.1.0"
+dependencies = [
+ "keyclean-win",
+]
+
+[[package]]
 name = "keyclean-win"
 version = "0.1.0"
 dependencies = [

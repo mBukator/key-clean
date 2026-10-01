@@ -27,5 +27,10 @@ features = [
     "Win32_UI_WindowsAndMessaging",
 ]
 
+[features]
+# Test kit for the automated end-to-end harness (crates/keyclean-e2e, ADR 0008). Never enabled by
+# the app. Adds the Win32 APIs only the harness needs.
+testkit = ["windows/Win32_System_Shutdown", "windows/Win32_System_Threading"]
+
 [lints]
 workspace = true

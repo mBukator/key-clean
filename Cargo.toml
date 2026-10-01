@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/keyclean-core", "crates/keyclean-win", "src-tauri"]
+members = ["crates/keyclean-core", "crates/keyclean-win", "crates/keyclean-e2e", "src-tauri"]
 resolver = "3"
 
 [workspace.package]

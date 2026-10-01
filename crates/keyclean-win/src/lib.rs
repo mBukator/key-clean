@@ -10,6 +10,8 @@ mod hook;
 mod keys;
 mod msg;
 mod qpc;
+#[cfg(feature = "testkit")]
+pub mod testkit;
 mod watchdog;
 
 pub use devices::KeyboardDevice;

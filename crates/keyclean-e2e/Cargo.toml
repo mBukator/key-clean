@@ -1,0 +1,15 @@
+[package]
+name = "keyclean-e2e"
+description = "Automated end-to-end checks for the KeyClean engine. Engages real input locks: run by hand only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+keyclean-win = { path = "../keyclean-win", features = ["testkit"] }
+
+[lints]
+workspace = true
