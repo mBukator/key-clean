@@ -108,7 +108,9 @@ Status: not started. Manual test: `docs/testing/manual/M3.md`.
 Scope: silent hook removal detection (Raw Input sink compared with the hook's last callback, Max's
 decision to defer from M1); sleep/wake, shutdown, restart and session switch tested end to end; device
 disconnect/reconnect during a lock (§26, §47); timer drift; system clock changes; crash recovery; every
-"Phase 2 (M3)" row in the fail-safe matrix.
+"Phase 2 (M3)" row in the fail-safe matrix; a `WM_CLOSE` broadcast to the app's windows (e.g.
+`taskkill` without `/F`) currently hangs the UI (the lock still ends): make the app exit cleanly
+instead.
 
 Acceptance (§60 "Safety"):
 
