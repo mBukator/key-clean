@@ -1,7 +1,12 @@
 {
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "main",
-    "description": "Permissions for the main dashboard window.",
+    "description": "Main window: listen for engine status, request a lock, read status and the keyboard list. Nothing else.",
     "windows": ["main"],
-    "permissions": ["core:event:default"]
+    "permissions": [
+        "core:event:default",
+        "allow-lock-keyboard",
+        "allow-get-status",
+        "allow-list-keyboards"
+    ]
 }
