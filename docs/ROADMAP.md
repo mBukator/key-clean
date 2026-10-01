@@ -60,12 +60,14 @@ Acceptance:
 
 ### M1 - Keyboard lock, emergency unlock, hard deadline (§62)
 
-Status: **code-complete - awaiting manual verification**. Manual test: `docs/testing/manual/M1.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(automated harness, ADR 0008) plus the manual part of `docs/testing/manual/M1.md`.
 
 Scope: `keyclean-core` (session state machine, policy, chord, key tracking, fake clock - all
 unit-tested); `keyclean-win` engine thread with `WH_KEYBOARD_LL` hook, hidden notification window,
 watchdog, system-transition unlocks, keyboard enumeration; `lock_smoke` example; bare Tauri shell (Lock
-button, status line, DEV CAP badge, keyboard list). Hard deadline, watchdog and debug dev cap are part of
+button, status line, DEV CAP badge, keyboard list); end-to-end harness `keyclean-e2e` with the
+`testkit` feature. Hard deadline, watchdog and debug dev cap are part of
 M1 so no build can lock indefinitely.
 
 Acceptance (§62 and §60 "Input"):
@@ -298,5 +300,7 @@ Not planned. Only after the core product is stable, and only if it passes §65.
   after Cancel, elevated window, AltGr, Sticky Keys, On-Screen Keyboard, sleep, and Windows 10.
 - **Chord held after unlock:** M1.md step 3 confirms that holding Ctrl+Alt+K for several seconds after
   unlocking types nothing (the drain stays while blocked keys repeat, up to 30 s and never past the hard deadline).
+- **E2E on CI:** `.github/workflows/e2e.yml` (manual trigger) checks whether hosted Windows runners can
+  run the harness. If they can, consider running it on PRs.
 - **Repo setup (Max):** push `main` and `develop` once, then enable branch protection for both in GitHub
   settings. Claude doesn't change repo settings.

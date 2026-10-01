@@ -67,7 +67,7 @@ docs/  scripts/  assets/
 
 - One milestone at a time from `docs/ROADMAP.md`. Plan first. Don't start the next milestone until I confirm the current one passed manual testing.
 - **Never engage a real input lock yourself.** Don't run the app, examples, or anything that installs hooks. You may run builds, `cargo test` (pure logic), clippy, fmt, typecheck, and lint. When hook behavior needs verifying, write the manual test and ask me to run it.
-- Automated tests cover `keyclean-core` with a fake clock. OS behavior is verified with `docs/testing/manual/<milestone>.md`: numbered steps, an expected result per step, and every step doable without the keyboard (mouse, a pre-armed PowerShell command such as `Start-Sleep 5; Stop-Process -Name keyclean -Force`, or the timer).
+- Automated tests cover `keyclean-core` with a fake clock. OS behavior is verified by the end-to-end harness `crates/keyclean-e2e` (ADR 0008; engages real locks, so Max runs it — write scenarios, never run them) plus `docs/testing/manual/<milestone>.md` for what can't be synthesized: numbered steps, an expected result per step, and every step doable without the keyboard (mouse, a pre-armed PowerShell command such as `Start-Sleep 5; Stop-Process -Name keyclean -Force`, or the timer).
 - Verify Win32 and Tauri APIs against official docs (learn.microsoft.com, docs.rs, v2.tauri.app) rather than memory, and link sources in research notes. Tag claims [docs], [tested], or [assumption].
 - Any deviation from `docs/SPEC.md` or this file needs an ADR: `docs/decisions/NNNN-title.md` (context, decision, alternatives, consequences).
 - After each milestone: update ROADMAP checkboxes, `CHANGELOG.md` (Unreleased), and the Commands section below, then give a handoff summary — what changed, how to test, risks, open questions.
@@ -109,6 +109,7 @@ bun run lint
 bun run format               # / format:check
 bunx merlin                  # interactive commit wizard
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock
+cargo run -p keyclean-e2e    # Max only — automated M1 checks (~2 min, locks repeatedly)
 ```
 
 If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).
