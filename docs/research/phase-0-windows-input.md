@@ -46,7 +46,7 @@ is safe but unannounced; detection is deferred to Phase 2 (M3) by Max's decision
 ### A2. What user mode cannot block
 
 - Ctrl+Alt+Del is the Secure Attention Sequence, handled by Winlogon. No user-mode hook can block it.
-  [docs] https://learn.microsoft.com/en-us/windows/win32/secauthn/secure-attention-sequence
+  [docs] https://learn.microsoft.com/en-us/windows/win32/secauthn/initializing-winlogon
 - Win+L is handled by Winlogon too. [assumption, recorded in M1.md]
 - Other desktops (UAC prompt, lock screen, Ctrl+Alt+Del screen) don't run our hook. [docs]
   https://learn.microsoft.com/en-us/windows/win32/winstation/desktops
