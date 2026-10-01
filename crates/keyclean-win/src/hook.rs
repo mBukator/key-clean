@@ -43,6 +43,9 @@ static DRAIN_POSTED: AtomicBool = AtomicBool::new(false);
 /// Generation of the current session, sent with every hook message so the engine can ignore
 /// messages left over from an earlier session.
 static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// QPC ticks of the last event blocked while draining (a blocked key still auto-repeating or
+/// being released). The engine extends the drain while this keeps moving.
+static LAST_DRAIN_BLOCK_TICKS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy)]
 struct HookLocal {
@@ -96,11 +99,17 @@ fn on_key_event(vk: u32, scan: u32, flags: u32) -> Verdict {
 
     let mut phase = Phase::from_u8(PHASE.load(Ordering::Acquire));
 
-    // Hard deadline, enforced on every event (invariant 6).
-    if matches!(phase, Phase::Arming | Phase::Locked)
+    // Hard deadline, enforced on every event (invariant 6). Before it, a lock in progress moves
+    // to Draining; past it, a drain still running moves to Passthrough, so the hook alone releases
+    // everything even if the watchdog has failed.
+    if matches!(phase, Phase::Arming | Phase::Locked | Phase::Draining)
         && qpc::ticks() >= HARD_DEADLINE_TICKS.load(Ordering::Acquire)
     {
-        if transition(phase, Phase::Draining) {
+        if phase == Phase::Draining {
+            if transition(Phase::Draining, Phase::Passthrough) {
+                post_once(&DRAIN_POSTED, WM_HOOK_DRAINED);
+            }
+        } else if transition(phase, Phase::Draining) {
             post_once(&END_POSTED, WM_HOOK_DEADLINE);
         }
         phase = Phase::from_u8(PHASE.load(Ordering::Acquire));
@@ -118,6 +127,9 @@ fn on_key_event(vk: u32, scan: u32, flags: u32) -> Verdict {
             // The completing chord key is decided under the phase it arrived in, so it is
             // swallowed and tracked like any other blocked press.
             let verdict = local.tracker.decide(phase, code, direction);
+            if verdict == Verdict::Block && phase == Phase::Draining {
+                LAST_DRAIN_BLOCK_TICKS.store(qpc::ticks(), Ordering::Release);
+            }
             if local.tracker.drained()
                 && Phase::from_u8(PHASE.load(Ordering::Acquire)) == Phase::Draining
             {
@@ -234,6 +246,16 @@ pub(crate) fn phase() -> Option<Phase> {
         PHASE_IDLE => None,
         p => Some(Phase::from_u8(p)),
     }
+}
+
+/// Marks the start of a drain as the last drain activity.
+pub(crate) fn mark_drain_start(ticks: u64) {
+    LAST_DRAIN_BLOCK_TICKS.store(ticks, Ordering::Release);
+}
+
+/// QPC ticks of the last event blocked while draining (or of the drain start).
+pub(crate) fn last_drain_block_ticks() -> u64 {
+    LAST_DRAIN_BLOCK_TICKS.load(Ordering::Acquire)
 }
 
 /// Whether every blocked press has been released. Engine thread only.

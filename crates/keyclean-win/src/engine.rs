@@ -20,7 +20,11 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use keyclean_core::policy::{DEFAULT_MAX_LOCK, DRAIN_TIMEOUT, LockPlan, SafetyProfile, plan_lock};
+use keyclean_core::keystate::Phase;
+use keyclean_core::policy::{
+    DEFAULT_MAX_LOCK, DRAIN_IDLE_TIMEOUT, DrainCheck, LockPlan, SafetyProfile, drain_check,
+    plan_lock,
+};
 use keyclean_core::session::{EndReason, Session, SessionState, SystemTransition};
 use keyclean_core::time::Clock;
 use windows::Win32::Foundation::{
@@ -105,8 +109,8 @@ pub struct EngineStatus {
 pub enum EngineNotice {
     /// Windows had already removed the hook when the engine tried to (e.g. a hook timeout).
     HookAlreadyRemoved,
-    /// Some blocked keys were never released (e.g. Ctrl+Alt+Del); the hook was removed after the
-    /// drain timeout.
+    /// Some blocked keys were never released (e.g. Ctrl+Alt+Del) or kept repeating for 30 s; the
+    /// hook was removed when the drain gave up.
     DrainTimedOut,
     /// Suspend notifications couldn't be registered; the broadcast is still received.
     PowerNotificationUnavailable,
@@ -258,6 +262,8 @@ struct EngineState {
     watchdog_generation: Option<u64>,
     power_notify: Option<HPOWERNOTIFY>,
     session_notify: bool,
+    /// QPC ticks when the current drain began.
+    drain_started_ticks: u64,
 }
 
 thread_local! {
@@ -316,6 +322,7 @@ fn engine_thread(
         watchdog_generation: None,
         power_notify,
         session_notify,
+        drain_started_ticks: 0,
     };
     let _ = STATE.try_with(|cell| *cell.borrow_mut() = Some(state));
     let _ = ready.send(Ok(hwnd.0 as isize));
@@ -608,13 +615,19 @@ impl EngineState {
         hook::enter_draining();
         self.emit_status();
 
-        let passthrough = hook::phase() != Some(keyclean_core::keystate::Phase::Draining);
+        let passthrough = hook::phase() != Some(Phase::Draining);
         if self.hook.is_none() || passthrough || hook::drained() {
             self.finish();
             return;
         }
+        self.drain_started_ticks = qpc::ticks();
+        hook::mark_drain_start(self.drain_started_ticks);
+        self.arm_drain_timer(DRAIN_IDLE_TIMEOUT);
+    }
+
+    fn arm_drain_timer(&mut self, after: Duration) {
         // SAFETY: `self.hwnd` is this thread's window; the timer is killed in `finish`.
-        if unsafe { SetTimer(Some(self.hwnd), TIMER_DRAIN, millis(DRAIN_TIMEOUT), None) } == 0 {
+        if unsafe { SetTimer(Some(self.hwnd), TIMER_DRAIN, millis(after), None) } == 0 {
             self.finish();
         }
     }
@@ -644,20 +657,33 @@ impl EngineState {
         }
     }
 
+    /// The hook reports that the drain is over: every blocked press was released, or the hard
+    /// deadline passed and it switched itself to passthrough.
     fn on_drained(&mut self, wparam: WPARAM) {
-        if self.is_current(wparam)
-            && self.session.state() == SessionState::Unlocking
-            && hook::drained()
-        {
+        let done = hook::drained() || hook::phase() == Some(Phase::Passthrough);
+        if self.is_current(wparam) && self.session.state() == SessionState::Unlocking && done {
             self.finish();
         }
     }
 
+    /// The drain lasts while blocked keys are still active (e.g. the chord keys auto-repeating
+    /// because the user is still holding them), so their repeats never reach Windows. It ends
+    /// once they go quiet for `DRAIN_IDLE_TIMEOUT`, or after `DRAIN_MAX`.
     fn on_drain_timeout(&mut self) {
         self.kill_timer(TIMER_DRAIN);
-        if self.session.state() == SessionState::Unlocking {
-            self.emit(EngineEvent::Notice(EngineNotice::DrainTimedOut));
-            self.finish();
+        if self.session.state() != SessionState::Unlocking {
+            return;
+        }
+        let now = qpc::ticks();
+        let since_start = qpc::ticks_to_duration(now.saturating_sub(self.drain_started_ticks));
+        let since_activity =
+            qpc::ticks_to_duration(now.saturating_sub(hook::last_drain_block_ticks()));
+        match drain_check(since_start, since_activity) {
+            DrainCheck::End => {
+                self.emit(EngineEvent::Notice(EngineNotice::DrainTimedOut));
+                self.finish();
+            }
+            DrainCheck::WaitFor(after) => self.arm_drain_timer(after),
         }
     }
 

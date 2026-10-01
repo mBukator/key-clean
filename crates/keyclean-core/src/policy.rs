@@ -24,9 +24,35 @@ pub const DEV_MAX_SESSION: Duration = Duration::from_secs(15);
 /// Hard-deadline cap in development builds.
 pub const DEV_MAX_HARD_DEADLINE: Duration = Duration::from_secs(20);
 
-/// How long the hook may stay installed after a session ends, waiting for the keys whose presses
-/// were blocked to be released (so their key-ups don't reach Windows unpaired).
-pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+/// After a session ends the hook stays installed ("draining") until every key whose press was
+/// blocked is released, so Windows never sees half of a blocked keystroke. The drain gives up once
+/// no blocked key has produced an event (auto-repeat or release) for this long, which covers keys
+/// whose key-ups never arrive (e.g. Ctrl+Alt+Del switched to the secure desktop).
+pub const DRAIN_IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Upper bound on a drain, even while a blocked key keeps auto-repeating (e.g. something resting
+/// on the keyboard). Everything else passes during a drain, so the user has control throughout.
+pub const DRAIN_MAX: Duration = Duration::from_secs(30);
+
+/// What the engine should do when its drain timer fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainCheck {
+    /// Remove the hook now.
+    End,
+    /// Check again after this long.
+    WaitFor(Duration),
+}
+
+/// Decides whether a drain should end. `since_start` is the time since the session ended;
+/// `since_activity` is the time since a blocked key last produced an event (or since the drain
+/// began, if none has).
+pub fn drain_check(since_start: Duration, since_activity: Duration) -> DrainCheck {
+    if since_start >= DRAIN_MAX || since_activity >= DRAIN_IDLE_TIMEOUT {
+        DrainCheck::End
+    } else {
+        DrainCheck::WaitFor((DRAIN_IDLE_TIMEOUT - since_activity).min(DRAIN_MAX - since_start))
+    }
+}
 
 /// Which set of caps applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +230,37 @@ mod tests {
         let plan = release(Duration::from_millis(1), DEFAULT_MAX_LOCK);
         assert_eq!(plan.session, Duration::from_millis(1));
         assert_eq!(plan.hard_deadline, Duration::from_millis(10_001));
+    }
+
+    #[test]
+    fn drain_ends_after_idle_timeout() {
+        assert_eq!(
+            drain_check(secs(0), secs(0)),
+            DrainCheck::WaitFor(DRAIN_IDLE_TIMEOUT)
+        );
+        assert_eq!(
+            drain_check(Duration::from_millis(1500), Duration::from_millis(1500)),
+            DrainCheck::WaitFor(Duration::from_millis(500))
+        );
+        assert_eq!(drain_check(secs(2), secs(2)), DrainCheck::End);
+    }
+
+    #[test]
+    fn auto_repeat_keeps_the_drain_alive() {
+        // Chord keys still held 5 s after unlock, K repeating every ~33 ms.
+        assert_eq!(
+            drain_check(secs(5), Duration::from_millis(33)),
+            DrainCheck::WaitFor(Duration::from_millis(1967))
+        );
+    }
+
+    #[test]
+    fn drain_is_capped_even_while_repeating() {
+        assert_eq!(drain_check(DRAIN_MAX, Duration::ZERO), DrainCheck::End);
+        assert_eq!(
+            drain_check(secs(29), Duration::ZERO),
+            DrainCheck::WaitFor(secs(1))
+        );
     }
 
     #[test]

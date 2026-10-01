@@ -368,7 +368,7 @@ mod tests {
         // Session ends (e.g. timer). No ups arrive.
         assert!(!rig.tracker.drained());
         assert_eq!(rig.tracker.swallowed.len(), 3);
-        // The engine's DRAIN_TIMEOUT then removes the hook; Windows never saw those keys go down,
+        // The engine's DRAIN_IDLE_TIMEOUT then removes the hook; Windows never saw those keys go down,
         // so there's nothing stuck on its side.
         assert!(rig.os.down.is_empty());
     }
