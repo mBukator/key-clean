@@ -70,6 +70,8 @@ fn start_engine(app: &AppHandle) {
     let (engine, error) = match Engine::start() {
         Ok((engine, events)) => {
             forward_events(app.clone(), events);
+            #[cfg(debug_assertions)]
+            e2e_autolock(&engine);
             (Some(engine), None)
         }
         Err(e) => {
@@ -81,6 +83,22 @@ fn start_engine(app: &AppHandle) {
         guard(&store.0).set_engine(engine.is_some(), error);
     }
     app.manage(EngineSlot(Mutex::new(engine)));
+}
+
+/// Debug builds only: `KEYCLEAN_E2E_AUTOLOCK=<seconds>` locks right after startup, so the
+/// end-to-end harness can test the app without clicking (ADR 0008). Clamped to the dev cap;
+/// release builds don't contain this.
+#[cfg(debug_assertions)]
+fn e2e_autolock(engine: &Engine) {
+    let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Some(seconds) = seconds {
+        let duration = Duration::from_secs(seconds.clamp(1, 15));
+        if let Err(e) = engine.lock(LockRequest::new(duration)) {
+            eprintln!("[keyclean] e2e autolock failed: {}", e.details());
+        }
+    }
 }
 
 /// Relays engine events to the main window. Ends when the engine stops.
