@@ -46,6 +46,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 struct Options {
     skip_app: bool,
     session_lock: bool,
+    only: Option<Vec<String>>,
 }
 
 impl Options {
@@ -53,9 +54,19 @@ impl Options {
         let mut options = Options {
             skip_app: false,
             session_lock: false,
+            only: None,
         };
-        for arg in std::env::args().skip(1) {
+        let mut args = std::env::args().skip(1);
+        while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--only" => {
+                    let ids = args
+                        .next()
+                        .filter(|ids| !ids.starts_with("--"))
+                        .ok_or(format!("--only needs a list such as S2,S11\n\n{USAGE}"))?;
+                    options.only =
+                        Some(ids.split(',').map(|id| id.trim().to_uppercase()).collect());
+                }
                 "--skip-app" => options.skip_app = true,
                 "--session-lock" => options.session_lock = true,
                 "--help" | "-h" => return Err(USAGE.into()),
@@ -66,7 +77,9 @@ impl Options {
     }
 }
 
-const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock]
+const USAGE: &str =
+    "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--only S2,S11]
+  --only IDS      run only these checks (comma-separated IDs from the report)
   --skip-app      skip the scenarios that start the app (target/debug/keyclean.exe)
   --session-lock  also lock the workstation (you'll have to sign back in); runs last";
 
@@ -169,6 +182,27 @@ fn run(options: &Options) -> i32 {
     scenarios.extend(scenarios::process_scenarios(options.skip_app));
     if options.session_lock {
         scenarios.push(scenarios::session_lock_scenario());
+    }
+
+    if let Some(only) = &options.only {
+        for id in only {
+            if !scenarios.iter().any(|s| s.id == id.as_str()) {
+                let hint = if id == "S13" {
+                    " (S13 also needs --session-lock)"
+                } else if options.skip_app && ["S10", "S11", "S12"].contains(&id.as_str()) {
+                    " (app checks are off with --skip-app)"
+                } else {
+                    ""
+                };
+                eprintln!("warning: --only {id} matches no check{hint}");
+            }
+        }
+        scenarios.retain(|s| only.iter().any(|id| id == s.id));
+        if scenarios.is_empty() {
+            eprintln!("--only matched no checks");
+            return EXIT_SETUP;
+        }
+        report.mark_partial(&only.join(","));
     }
 
     for scenario in &scenarios {

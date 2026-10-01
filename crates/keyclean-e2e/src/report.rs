@@ -15,11 +15,15 @@ struct Row {
 
 pub struct Report {
     rows: Vec<Row>,
+    partial: Option<String>,
 }
 
 impl Report {
     pub fn new() -> Self {
-        Report { rows: Vec::new() }
+        Report {
+            rows: Vec::new(),
+            partial: None,
+        }
     }
 
     pub fn add(
@@ -43,6 +47,11 @@ impl Report {
         });
     }
 
+    /// Marks the report as covering only some checks (`--only`).
+    pub fn mark_partial(&mut self, ids: &str) {
+        self.partial = Some(ids.to_string());
+    }
+
     pub fn failed(&self) -> usize {
         self.rows.iter().filter(|r| r.status == "FAIL").count()
     }
@@ -53,6 +62,9 @@ impl Report {
 
     pub fn markdown(&self, elapsed: Duration) -> String {
         let mut out = String::from("# KeyClean e2e results (M1)\n\n");
+        if let Some(ids) = &self.partial {
+            out.push_str(&format!("Partial run: only {ids}.\n\n"));
+        }
         out.push_str("| ID | M1 step | Check | Result | Detail |\n");
         out.push_str("| -- | ------- | ----- | ------ | ------ |\n");
         for r in &self.rows {

@@ -474,9 +474,18 @@ fn app_exe() -> Result<PathBuf, Outcome> {
     }
 }
 
-fn start_app(exe: &PathBuf, autolock_secs: Option<u64>) -> Result<Guard, String> {
+/// Starts the app with its stderr (session events only, never keys) saved next to the harness as
+/// `e2e-<id>-app.log`, for diagnosing failures.
+fn start_app(exe: &PathBuf, autolock_secs: Option<u64>, log_id: &str) -> Result<Guard, String> {
     let mut cmd = Command::new(exe);
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdout(Stdio::null());
+    let log = target_dir()
+        .map(|d| d.join(format!("e2e-{log_id}-app.log")))
+        .and_then(|path| std::fs::File::create(path).ok());
+    match log {
+        Some(file) => cmd.stderr(Stdio::from(file)),
+        None => cmd.stderr(Stdio::null()),
+    };
     if let Some(secs) = autolock_secs {
         cmd.env("KEYCLEAN_E2E_AUTOLOCK", secs.to_string());
     }
@@ -485,13 +494,48 @@ fn start_app(exe: &PathBuf, autolock_secs: Option<u64>) -> Result<Guard, String>
         .map_err(|e| format!("couldn't start the app: {e}"))
 }
 
+/// Window class of the app's own windows (set by Tauri). Only these get the close request, like
+/// a user clicking X; the hidden helper windows of tao and the single-instance plugin don't.
+const APP_WINDOW_CLASS: &str = "Tauri Window";
+
+/// A killed app's WebView2 helper processes take a moment to exit and release its data folder;
+/// starting the next instance too early can stall that instance's UI thread.
+const WEBVIEW_SETTLE: Duration = Duration::from_secs(4);
+
+/// Waits until every app window answers messages; returns how long that took.
+fn wait_responsive(pid: u32, timeout: Duration) -> Option<Duration> {
+    let started = Instant::now();
+    wait_until(timeout, || {
+        let windows = system::windows_of(pid);
+        !windows.is_empty() && windows.iter().all(|w| w.responding)
+    })
+    .then(|| started.elapsed())
+}
+
+/// Polls with probes until input gets through; returns how long that took.
+fn wait_input_back(observer: &Observer, timeout: Duration) -> Result<Option<Duration>, String> {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if crate::harness::probe_passes(observer, vk::F13)? {
+            return Ok(Some(started.elapsed()));
+        }
+    }
+    Ok(None)
+}
+
+fn describe(d: Option<Duration>, missing: &str) -> String {
+    d.map_or(missing.to_string(), |d| {
+        format!("after {} ms", d.as_millis())
+    })
+}
+
 fn kill_app(ctx: &mut Ctx<'_>) -> Outcome {
     let exe = match app_exe() {
         Ok(exe) => exe,
         Err(skip) => return skip,
     };
     let run = || -> Result<String, String> {
-        let mut app = start_app(&exe, Some(15))?;
+        let mut app = start_app(&exe, Some(15), "S10")?;
         wait_blocked(ctx.observer, Duration::from_secs(20))?;
         app.0.kill().map_err(|e| format!("kill failed: {e}"))?;
         if !wait_exit(&mut app.0, Duration::from_secs(5)) {
@@ -503,6 +547,7 @@ fn kill_app(ctx: &mut Ctx<'_>) -> Outcome {
     };
     let result = run();
     crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
     result.into()
 }
 
@@ -512,24 +557,59 @@ fn close_app(ctx: &mut Ctx<'_>) -> Outcome {
         Err(skip) => return skip,
     };
     let run = || -> Result<String, String> {
-        let mut app = start_app(&exe, Some(15))?;
+        let mut app = start_app(&exe, Some(15), "S11")?;
+        let pid = app.0.id();
         wait_blocked(ctx.observer, Duration::from_secs(20))?;
-        if system::close_windows_of(app.0.id()) == 0 {
+        let responsive = wait_responsive(pid, Duration::from_secs(8));
+        let classes: Vec<String> = system::windows_of(pid)
+            .into_iter()
+            .map(|w| {
+                let state = if w.responding {
+                    ""
+                } else {
+                    " (not responding)"
+                };
+                format!("{}{state}", w.class)
+            })
+            .collect();
+        // The lock must still be engaged right before the close, so only the close can release it.
+        expect_probes_blocked(ctx.observer).map_err(|_| {
+            "the autolock ended before the close was sent (app too slow)".to_string()
+        })?;
+        if system::request_close(pid, APP_WINDOW_CLASS) == 0 {
             return Err("found no app window to close".into());
         }
         let closed = Instant::now();
-        if !wait_exit(&mut app.0, Duration::from_secs(10)) {
-            return Err("the app didn't exit after its window closed".into());
+        let input_back = wait_input_back(ctx.observer, Duration::from_secs(5))?;
+        let exited = wait_exit(&mut app.0, Duration::from_secs(20)).then(|| closed.elapsed());
+
+        let detail = format!(
+            "window responding: {}; app windows [{}], close sent to the Tauri Window; input back: {}; process exit: {}; \
+             log: e2e-S11-app.log",
+            describe(responsive, "no (waited 8 s)"),
+            classes.join(", "),
+            describe(input_back, "NO (waited 5 s)"),
+            describe(exited, "still running after 20 s"),
+        );
+        if input_back.is_none() || exited.is_none() {
+            return Err(detail);
         }
-        expect_probes_pass(ctx.observer)?;
+        // The app logs why the session ended; the close must be what ended it, not the timer.
+        let log = target_dir()
+            .map(|d| d.join("e2e-S11-app.log"))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        if !log.contains("session ended: UserRequest") {
+            return Err(format!(
+                "{detail}; the app log doesn't show the close ending the session"
+            ));
+        }
         expect_no_stuck_keys()?;
-        Ok(format!(
-            "app exited {} ms after the close; input back",
-            closed.elapsed().as_millis()
-        ))
+        Ok(detail)
     };
     let result = run();
     crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
     result.into()
 }
 
@@ -539,23 +619,27 @@ fn second_instance(_ctx: &mut Ctx<'_>) -> Outcome {
         Err(skip) => return skip,
     };
     let run = || -> Result<String, String> {
-        let mut first = start_app(&exe, None)?;
+        let mut first = start_app(&exe, None, "S12-first")?;
         let pid = first.0.id();
-        if !wait_until(Duration::from_secs(20), || {
-            system::visible_window_count(pid) > 0
-        }) {
-            return Err("the first instance didn't show a window".into());
+        if wait_responsive(pid, Duration::from_secs(20)).is_none() {
+            return Err("the first instance didn't show a responding window".into());
         }
-        let mut second = start_app(&exe, None)?;
+        let mut second = start_app(&exe, None, "S12-second")?;
         if !wait_exit(&mut second.0, Duration::from_secs(10)) {
             return Err("the second instance kept running".into());
         }
         if !matches!(first.0.try_wait(), Ok(None)) {
             return Err("the first instance exited".into());
         }
-        system::close_windows_of(pid);
-        let _ = wait_exit(&mut first.0, Duration::from_secs(10));
-        Ok("second instance exited, first kept running".into())
+        system::request_close(pid, APP_WINDOW_CLASS);
+        if !wait_exit(&mut first.0, Duration::from_secs(10)) {
+            return Err(
+                "second instance exited, but the first didn't exit after its window closed".into(),
+            );
+        }
+        Ok("second instance exited; first kept running, then closed cleanly".into())
     };
-    run().into()
+    let result = run();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
 }
