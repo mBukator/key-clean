@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / bun
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Tauri
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Logs and local env
+*.log
+.env
+.env.*
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
