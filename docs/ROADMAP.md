@@ -63,6 +63,9 @@ Acceptance:
 Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
 (automated harness, ADR 0008) plus the manual part of `docs/testing/manual/M1.md`.
 
+Automated harness: **12/12 passed** on Max's machine (Windows 11 25H2), 2026-10-02. Still to do:
+Part B of M1.md (real keys, Ctrl+Alt+Del, elevated window, sleep, Sticky Keys, On-Screen Keyboard).
+
 Scope: `keyclean-core` (session state machine, policy, chord, key tracking, fake clock - all
 unit-tested); `keyclean-win` engine thread with `WH_KEYBOARD_LL` hook, hidden notification window,
 watchdog, system-transition unlocks, keyboard enumeration; `lock_smoke` example; bare Tauri shell (Lock
