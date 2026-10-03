@@ -44,6 +44,16 @@ pub enum EngineError {
         /// Windows' message for it.
         message: String,
     },
+    /// The engine process (ADR 0009) couldn't be started, didn't answer, or stopped.
+    EngineProcess(String),
+    /// An error reported by the engine process, carried over the wire as its message key and
+    /// technical details.
+    Remote {
+        /// Key into `locales/<lang>/strings.json`.
+        message_key: String,
+        /// Technical details.
+        details: String,
+    },
 }
 
 impl EngineError {
@@ -69,10 +79,10 @@ impl EngineError {
     }
 
     /// Key into `locales/<lang>/strings.json` for the plain-language message.
-    pub fn message_key(&self) -> &'static str {
+    pub fn message_key(&self) -> &str {
         match self {
             EngineError::AlreadyRunning => "error.engine_already_running",
-            EngineError::NotRunning => "error.engine_stopped",
+            EngineError::NotRunning | EngineError::EngineProcess(_) => "error.engine_stopped",
             EngineError::AlreadyActive => "error.already_locked",
             EngineError::InvalidRequest(_) => "error.invalid_duration",
             EngineError::ThreadSpawn(_) | EngineError::WindowSetup { .. } => "error.engine_start",
@@ -81,6 +91,7 @@ impl EngineError {
                 "error.engine_failed"
             }
             EngineError::DeviceQuery { .. } => "error.devices",
+            EngineError::Remote { message_key, .. } => message_key,
         }
     }
 
@@ -104,6 +115,8 @@ impl EngineError {
             EngineError::DeviceQuery { code, message } => {
                 format!("device enumeration failed: {code:#010X}: {message}")
             }
+            EngineError::EngineProcess(e) => format!("engine process: {e}"),
+            EngineError::Remote { details, .. } => details.clone(),
         }
     }
 }
