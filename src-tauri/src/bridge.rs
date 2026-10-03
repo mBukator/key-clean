@@ -203,6 +203,7 @@ mod tests {
             EngineError::ThreadSpawn(String::new()),
             EngineError::Timer,
             EngineError::MessageLoop,
+            EngineError::EngineProcess(String::new()),
         ];
         for e in errors {
             assert!(

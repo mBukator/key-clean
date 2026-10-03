@@ -1,7 +1,8 @@
 //! KeyClean app shell: Tauri setup and the command/event bridge to the native engine.
 //!
-//! The engine runs on its own thread and owns the lock. This shell only forwards requests and
-//! displays events, so a hung, crashed or closed webview can't affect unlocking (invariant 3).
+//! The engine runs in its own process (ADR 0009) and owns the lock. This shell only forwards
+//! requests and displays events, so a hung, crashed or closed webview can't affect unlocking
+//! (invariant 3).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -11,11 +12,12 @@ mod bridge;
 #[allow(dead_code)]
 mod i18n;
 
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use keyclean_win::keyclean_core::policy::SafetyProfile;
-use keyclean_win::{Engine, EngineError, EngineEvent, LockRequest, safety_profile};
+use keyclean_win::{EngineClient, EngineError, EngineEvent, LockRequest, safety_profile};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 use bridge::{ErrorDto, KeyboardDto, STATUS_EVENT, StatusDto};
@@ -23,9 +25,14 @@ use bridge::{ErrorDto, KeyboardDto, STATUS_EVENT, StatusDto};
 /// Milestone 1 lock length. Debug builds are capped by the engine anyway (15 s / 20 s).
 const M1_LOCK: Duration = Duration::from_secs(10);
 const MAIN_WINDOW: &str = "main";
+/// How long exit waits for the relay to pass on the engine's last events.
+const RELAY_DRAIN: Duration = Duration::from_secs(1);
 
 /// The engine, if it started. Taken out and dropped on exit, which releases any lock.
-struct EngineSlot(Mutex<Option<Engine>>);
+struct EngineSlot(Mutex<Option<EngineClient>>);
+
+/// Signals when the event relay has passed on the engine's last event.
+struct RelayDone(Mutex<Option<Receiver<()>>>);
 
 /// The latest status, for windows that ask instead of listening.
 struct StatusStore(Mutex<StatusDto>);
@@ -67,21 +74,27 @@ fn start_engine(app: &AppHandle) {
         dev_cap,
         M1_LOCK.as_secs(),
     ))));
-    let (engine, error) = match Engine::start() {
+    let set_engine = |available: bool, error: Option<ErrorDto>| {
+        if let Some(store) = app.try_state::<StatusStore>() {
+            guard(&store.0).set_engine(available, error);
+        }
+    };
+    let engine = match EngineClient::start() {
         Ok((engine, events)) => {
-            forward_events(app.clone(), events);
+            // Recorded before the relay starts, so an early engine failure it reports isn't
+            // overwritten.
+            set_engine(true, None);
+            app.manage(RelayDone(Mutex::new(forward_events(app.clone(), events))));
             #[cfg(debug_assertions)]
             e2e_autolock(&engine);
-            (Some(engine), None)
+            Some(engine)
         }
         Err(e) => {
             eprintln!("[keyclean] engine failed to start: {}", e.details());
-            (None, Some(ErrorDto::from(&e)))
+            set_engine(false, Some(ErrorDto::from(&e)));
+            None
         }
     };
-    if let Some(store) = app.try_state::<StatusStore>() {
-        guard(&store.0).set_engine(engine.is_some(), error);
-    }
     app.manage(EngineSlot(Mutex::new(engine)));
 }
 
@@ -89,7 +102,7 @@ fn start_engine(app: &AppHandle) {
 /// end-to-end harness can test the app without clicking (ADR 0008). Clamped to the dev cap;
 /// release builds don't contain this.
 #[cfg(debug_assertions)]
-fn e2e_autolock(engine: &Engine) {
+fn e2e_autolock(engine: &EngineClient) {
     let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
         .ok()
         .and_then(|v| v.parse::<u64>().ok());
@@ -101,8 +114,10 @@ fn e2e_autolock(engine: &Engine) {
     }
 }
 
-/// Relays engine events to the main window. Ends when the engine stops.
-fn forward_events(app: AppHandle, events: std::sync::mpsc::Receiver<EngineEvent>) {
+/// Relays engine events to the main window. Ends when the engine stops; the returned receiver
+/// then gets a signal (or disconnects).
+fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Receiver<()>> {
+    let (done_tx, done_rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("keyclean-events".into())
         .spawn(move || {
@@ -122,20 +137,35 @@ fn forward_events(app: AppHandle, events: std::sync::mpsc::Receiver<EngineEvent>
                 let snapshot = {
                     let mut status = guard(&store.0);
                     status.apply(&event);
+                    if let EngineEvent::Error(e @ EngineError::EngineProcess(_)) = &event {
+                        // The engine process is gone; nothing more can be locked.
+                        status.set_engine(false, Some(ErrorDto::from(e)));
+                    }
                     status.clone()
                 };
                 let _ = app.emit_to(MAIN_WINDOW, STATUS_EVENT, snapshot);
             }
+            let _ = done_tx.send(());
         });
-    if let Err(e) = spawned {
-        eprintln!("[keyclean] could not start the event relay: {e}");
+    match spawned {
+        Ok(_) => Some(done_rx),
+        Err(e) => {
+            eprintln!("[keyclean] could not start the event relay: {e}");
+            None
+        }
     }
 }
 
 fn stop_engine(app: &AppHandle) {
     if let Some(slot) = app.try_state::<EngineSlot>() {
         let engine = guard(&slot.0).take();
-        drop(engine); // Releases any lock and joins the engine thread.
+        drop(engine); // Releases any lock and stops the engine process.
+    }
+    // Let the relay log how the session ended before the process exits.
+    if let Some(relay) = app.try_state::<RelayDone>()
+        && let Some(done) = guard(&relay.0).take()
+    {
+        let _ = done.recv_timeout(RELAY_DRAIN);
     }
 }
 
