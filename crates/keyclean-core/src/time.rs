@@ -59,11 +59,17 @@ impl FakeClock {
     /// Moves the clock forward by `d`.
     pub fn advance(&self, d: Duration) {
         let step = u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
-        let _ = self
-            .nanos
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                Some(n.saturating_add(step))
-            });
+        // A compare-exchange loop rather than `fetch_update`, which newer Rust deprecates in favour
+        // of `try_update`, which older toolchains lack.
+        let mut current = self.nanos.load(Ordering::SeqCst);
+        while let Err(actual) = self.nanos.compare_exchange_weak(
+            current,
+            current.saturating_add(step),
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            current = actual;
+        }
     }
 }
 
