@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                           |
-| ---------------------------------------------- | ----------- | ------------------------------------------------ |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **code-complete - awaiting manual verification** |
-| M3 Safety hardening                            | §53 Phase 2 | not started                                      |
-| M4 Device detection                            | §52 Phase 1 | not started                                      |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
-| M8 System tray                                 | §55 Phase 4 | not started                                      |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
-| M11 Packaging                                  | §55 Phase 4 | not started                                      |
-| M12 Open-source release                        | §56 Phase 5 | not started                                      |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
+| Milestone                                      | Phase       | Status                                      |
+| ---------------------------------------------- | ----------- | ------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
+| M3 Safety hardening                            | §53 Phase 2 | not started                                 |
+| M4 Device detection                            | §52 Phase 1 | not started                                 |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
+| M8 System tray                                 | §55 Phase 4 | not started                                 |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
+| M11 Packaging                                  | §55 Phase 4 | not started                                 |
+| M12 Open-source release                        | §56 Phase 5 | not started                                 |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
 
 ---
 
@@ -101,10 +101,19 @@ Acceptance (§62 and §60 "Input"):
 
 ### M2 - Timer and automatic unlock
 
-Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
-(S15 countdown through the engine process, S16 hard deadline with the session timer switched off, plus
-the M1 checks) and Parts B and C of `docs/testing/manual/M2.md`, including real durations in a release
-build.
+Status: **done** (verified by Max, 2026-10-03). Verification: `cargo run -p keyclean-e2e` plus Parts
+B and C of `docs/testing/manual/M2.md`.
+
+Harness, 2026-10-03: S1-S14 and S16 passed (S16: the hard deadline alone released a 3 s lock after
+13.01 s). S15 first failed with a single countdown status because the harness ran a `keyclean.exe`
+built before M2 (`cargo run -p keyclean-e2e` doesn't rebuild the app); the harness now skips the app
+checks when the exe is older than its sources. Re-run on a fresh build: S15 passed (5..1, worst tick
+7 ms off, released after 5.01 s). Manual Parts B and C all passed, including the 30 s, 1 min, 2 min and
+5 min presets in a release build against a stopwatch, the 5 min lock with KeyClean in the background,
+Unlock now, Ctrl+Alt+K, a kill mid-lock, and idle CPU after a lock.
+
+The first manual run also found that the window couldn't call the new commands (missing from
+`build.rs` and the capability); fixed, with a test that keeps the three lists in sync.
 
 Done in code: presets 30 s / 1 min / 2 min / 5 min (default 2 min) in `keyclean-core::presets`, the
 app rejects any other duration; the engine emits a status each time the displayed second changes
@@ -118,10 +127,10 @@ to the max-lock setting (60 min absolute ceiling, ADR 0006).
 
 Acceptance (§60 "Timer"):
 
-- [ ] Preset durations work
-- [ ] Countdown is accurate
-- [ ] Automatic unlock works
-- [ ] Safety timeout works
+- [x] Preset durations work (M2.md steps 6-9, release build)
+- [x] Countdown is accurate (S15; M2.md steps 6-7 against a stopwatch)
+- [x] Automatic unlock works (M2.md steps 4, 6-8)
+- [x] Safety timeout works (S16; dev cap in step 4)
 
 ## Phase 2 - Safety (§53)
 
