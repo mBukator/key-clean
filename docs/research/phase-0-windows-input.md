@@ -54,7 +54,8 @@ is safe but unannounced; detection is deferred to Phase 2 (M3) by Max's decision
   never reach Windows as keystrokes. [assumption]
 - The Windows key can be swallowed by a low-level hook. [docs]
   https://learn.microsoft.com/en-us/windows/win32/dxtecharts/disabling-shortcut-keys-in-games
-- Alt+Tab, Ctrl+Esc, Ctrl+Shift+Esc, Win+X, Win+G and media keys should be swallowable.
+- Alt+Tab, Ctrl+Esc, Ctrl+Shift+Esc, Win+X, Win+G and media keys should be swallowable. (M1 found
+  that the physical Win+G is not; see `webview-focus-hook.md`.)
   [needs prototype]
 - Don't change Sticky Keys with `SPI_SETSTICKYKEYS`: the setting persists after the process exits,
   which would break invariant 2 (no persistent state). [docs] (same "disabling shortcut keys" page)

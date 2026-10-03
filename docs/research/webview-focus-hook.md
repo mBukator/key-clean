@@ -48,9 +48,11 @@ are commonly handled by keyboard firmware or ACPI and never reach the hook [assu
 the result].
 
 **Note on Win+G.** Harness check S6 sends a synthesized Win+G and it is blocked, while the real key
-got through. Either Game Bar sees the physical key some other way, or the real-key test ran with the
-KeyClean window focused and hit the focus bug above. Re-check Win+G with Notepad focused after the
-engine-process change; if it is then blocked, update this row.
+gets through. Re-checked on 2026-10-03 with the engine in its own process and Notepad focused: the real
+Win+G still opened Game Bar [tested], so this is not the focus bug. Win on its own is blocked (F1), so
+the hook does see the Win key. Game Bar probably receives the physical shortcut through a path that
+doesn't pass through low-level hooks [assumption; no documentation found]. Documented as
+unblockable.
 
 ## 3. Other Part B results (2026-10-02)
 

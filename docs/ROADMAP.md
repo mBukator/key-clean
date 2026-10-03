@@ -72,8 +72,9 @@ Keys not tested.
 the hook (Win opened Start, Ctrl+Alt+K needed several tries). The engine now runs in its own process
 (ADR 0009, `docs/research/webview-focus-hook.md`). Harness on the engine-process build, 2026-10-03:
 **13/13 passed** (S13 is opt-in and wasn't run), including S14 (Ctrl+Alt+K with the app window
-focused, 19 ms) and the new no-leftover-process checks in S10/S11. Still to do: focus checks F1/F3
-with real keys and a Win+G re-check with Notepad focused.
+focused, 19 ms) and the new no-leftover-process checks in S10/S11. Focus checks F1/F3 with real keys
+passed on 2026-10-03. Win+G re-checked with Notepad focused still gets through, so it stays documented
+as unblockable.
 
 Scope: `keyclean-core` (session state machine, policy, chord, key tracking, fake clock - all
 unit-tested); `keyclean-win` engine thread with `WH_KEYBOARD_LL` hook, hidden notification window,
