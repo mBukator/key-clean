@@ -235,9 +235,20 @@ pub(crate) fn enter_draining() {
 
 /// Watchdog override: pass everything, unless no hook is active.
 pub(crate) fn force_passthrough() {
-    let _ = PHASE.fetch_update(Ordering::AcqRel, Ordering::Acquire, |p| {
-        (p != PHASE_IDLE).then_some(Phase::Passthrough as u8)
-    });
+    // A compare-exchange loop rather than `fetch_update`, which newer Rust deprecates in favour of
+    // `try_update`, which older toolchains lack.
+    let mut current = PHASE.load(Ordering::Acquire);
+    while current != PHASE_IDLE {
+        match PHASE.compare_exchange_weak(
+            current,
+            Phase::Passthrough as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// The current phase, or `None` when no hook is active.
