@@ -746,12 +746,14 @@ pub fn focused_app_chord() -> Outcome {
             let log = read_log();
             if log.contains("session ended: Emergency") {
                 Ok(format!(
-                    "Ctrl+Alt+K ended the lock {} ms after it was pressed, with the app window                      focused",
+                    "Ctrl+Alt+K ended the lock {} ms after it was pressed, with the app window \
+                     focused",
                     pressed.elapsed().as_millis()
                 ))
             } else {
                 Err(format!(
-                    "Ctrl+Alt+K didn't end the lock while the app window had focus (the hook went                      deaf; within 3 s: {}); log: e2e-S14-app.log",
+                    "Ctrl+Alt+K didn't end the lock while the app window had focus (the hook went \
+                     deaf; within 3 s: {}); log: e2e-S14-app.log",
                     ended_line(&log)
                 ))
             }
