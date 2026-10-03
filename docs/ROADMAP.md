@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                           |
-| ---------------------------------------------- | ----------- | ------------------------------------------------ |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **code-complete - awaiting manual verification** |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | not started                                      |
-| M3 Safety hardening                            | §53 Phase 2 | not started                                      |
-| M4 Device detection                            | §52 Phase 1 | not started                                      |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
-| M8 System tray                                 | §55 Phase 4 | not started                                      |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
-| M11 Packaging                                  | §55 Phase 4 | not started                                      |
-| M12 Open-source release                        | §56 Phase 5 | not started                                      |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
+| Milestone                                      | Phase       | Status                                      |
+| ---------------------------------------------- | ----------- | ------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | not started                                 |
+| M3 Safety hardening                            | §53 Phase 2 | not started                                 |
+| M4 Device detection                            | §52 Phase 1 | not started                                 |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
+| M8 System tray                                 | §55 Phase 4 | not started                                 |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
+| M11 Packaging                                  | §55 Phase 4 | not started                                 |
+| M12 Open-source release                        | §56 Phase 5 | not started                                 |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
 
 ---
 
@@ -41,7 +41,7 @@ Research is done: `docs/research/phase-0-windows-input.md`, `docs/research/fail-
 
 ### M0 - Scaffold and tooling
 
-Status: **code-complete - awaiting manual verification**; only CI on the pushed branch is left.
+Status: **done** (CI passed on the pushed branch, 2026-10-03).
 Manual test: none of its own; M1.md step 1
 confirms both targets build and start.
 
@@ -55,7 +55,7 @@ Acceptance:
 - [x] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace` pass
 - [x] `bun run typecheck`, `bun run lint`, `bun run format:check` pass
-- [ ] CI passes on the pushed branch
+- [x] CI passes on the pushed branch
 - [x] Commit hooks run (commitlint, lint-staged, pre-push gate)
 - [x] App launches (`bun tauri dev`) - §60 "Launches successfully"
 
