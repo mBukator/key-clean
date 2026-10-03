@@ -4,6 +4,8 @@ fn main() {
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "lock_keyboard",
+            "unlock_keyboard",
+            "get_lock_options",
             "get_status",
             "list_keyboards",
         ]));

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-lock-options"
+description = "Enables the get_lock_options command without any pre-configured scope."
+commands.allow = ["get_lock_options"]
+
+[[permission]]
+identifier = "deny-get-lock-options"
+description = "Denies the get_lock_options command without any pre-configured scope."
+commands.deny = ["get_lock_options"]

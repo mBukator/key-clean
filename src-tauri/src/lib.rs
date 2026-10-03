@@ -224,3 +224,51 @@ pub fn run() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    /// The text between `start` and the next `end` after it.
+    fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+        let from = text.find(start).expect("start marker") + start.len();
+        let len = text[from..].find(end).expect("end marker");
+        &text[from..from + len]
+    }
+
+    /// Tauri only lets the window call commands that build.rs lists and the window's capability
+    /// allows; a missing one fails at runtime with "not allowed. Command not found".
+    #[test]
+    fn every_command_is_listed_and_allowed() {
+        let handler: BTreeSet<String> = between(
+            include_str!("lib.rs"),
+            concat!("generate_handler", "!["),
+            "]",
+        )
+        .split(',')
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+        let listed: BTreeSet<String> = between(include_str!("../build.rs"), ".commands(&[", "]")
+            .split(',')
+            .map(|name| name.trim().trim_matches('"').to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
+        let allowed: BTreeSet<String> = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str()?.strip_prefix("allow-"))
+            .map(|name| name.replace('-', "_"))
+            .collect();
+
+        assert!(!handler.is_empty());
+        assert_eq!(handler, listed, "build.rs must list every command");
+        assert_eq!(
+            handler, allowed,
+            "capabilities/main.json must allow every command"
+        );
+    }
+}
