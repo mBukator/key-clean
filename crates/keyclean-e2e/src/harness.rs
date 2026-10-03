@@ -120,6 +120,14 @@ pub struct Ended {
     pub notices: Vec<EngineNotice>,
 }
 
+/// A lock request for `duration` whose hard deadline stays within the development caps.
+pub fn dev_request(duration: Duration) -> LockRequest {
+    LockRequest {
+        duration,
+        max_lock: DEV_MAX_HARD_DEADLINE,
+    }
+}
+
 /// The in-process engine plus its event stream.
 pub struct EngineRig {
     engine: Engine,
@@ -144,12 +152,22 @@ impl EngineRig {
     /// Requests a lock of `duration`, clamped to the development caps.
     pub fn lock(&mut self, duration: Duration) -> Result<Instant, String> {
         self.drain_pending();
-        let request = LockRequest {
-            duration,
-            max_lock: DEV_MAX_HARD_DEADLINE,
-        };
         let at = Instant::now();
-        self.engine.lock(request).map_err(|e| e.details())?;
+        self.engine
+            .lock(dev_request(duration))
+            .map_err(|e| e.details())?;
+        Ok(at)
+    }
+
+    /// Requests a lock with no session timer, so only the hard deadline (or another exit) can
+    /// end it, and waits until it is engaged.
+    pub fn lock_without_session_timer(&mut self, duration: Duration) -> Result<Instant, String> {
+        self.drain_pending();
+        let at = Instant::now();
+        self.engine
+            .lock_without_session_timer(dev_request(duration))
+            .map_err(|e| e.details())?;
+        self.wait_state(SessionState::Locked, Duration::from_secs(3))?;
         Ok(at)
     }
 

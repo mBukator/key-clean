@@ -61,11 +61,11 @@ impl Report {
     }
 
     pub fn markdown(&self, elapsed: Duration) -> String {
-        let mut out = String::from("# KeyClean e2e results (M1)\n\n");
+        let mut out = String::from("# KeyClean e2e results (M1, M2)\n\n");
         if let Some(ids) = &self.partial {
             out.push_str(&format!("Partial run: only {ids}.\n\n"));
         }
-        out.push_str("| ID | M1 step | Check | Result | Detail |\n");
+        out.push_str("| ID | Manual step | Check | Result | Detail |\n");
         out.push_str("| -- | ------- | ----- | ------ | ------ |\n");
         for r in &self.rows {
             out.push_str(&format!(

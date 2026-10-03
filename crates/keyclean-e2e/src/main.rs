@@ -129,8 +129,8 @@ fn main() {
 }
 
 fn run(options: &Options) -> i32 {
-    println!("KeyClean end-to-end checks (M1)");
-    println!("This locks your keyboard several times over about 2 minutes (6 minutes at most).");
+    println!("KeyClean end-to-end checks (M1, M2)");
+    println!("This locks your keyboard several times over about 2.5 minutes (6 minutes at most).");
     println!("  - Hands off the keyboard until it finishes. The mouse is never locked.");
     println!("  - Click into an empty Notepad window now (anything that leaks lands there).");
     println!("  - The real Ctrl+Alt+K always unlocks. Ctrl+C now to cancel.");
@@ -195,7 +195,7 @@ fn run(options: &Options) -> i32 {
             if id != "S14" && !scenarios.iter().any(|s| s.id == id.as_str()) {
                 let hint = if id == "S13" {
                     " (S13 also needs --session-lock)"
-                } else if options.skip_app && ["S10", "S11", "S12"].contains(&id.as_str()) {
+                } else if options.skip_app && ["S10", "S11", "S12", "S15"].contains(&id.as_str()) {
                     " (app checks are off with --skip-app)"
                 } else {
                     ""

@@ -17,3 +17,6 @@ pub(crate) const WM_WATCHDOG_EXPIRED: u32 = WM_APP + 11;
 pub(crate) const TIMER_SESSION: usize = 1;
 /// `SetTimer` id for the drain timeout.
 pub(crate) const TIMER_DRAIN: usize = 2;
+/// `SetTimer` id for the countdown: fires when the displayed second changes. Display only; it
+/// never ends a session.
+pub(crate) const TIMER_COUNTDOWN: usize = 3;

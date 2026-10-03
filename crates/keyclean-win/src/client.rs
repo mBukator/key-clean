@@ -49,6 +49,13 @@ impl EngineClient {
         Self::start_exe(&exe)
     }
 
+    /// Testkit only: starts the engine process from `exe` (the app's executable), so the
+    /// end-to-end harness can drive the real process and pipe path.
+    #[cfg(feature = "testkit")]
+    pub fn start_from(exe: &Path) -> Result<(EngineClient, Receiver<EngineEvent>), EngineError> {
+        Self::start_exe(exe)
+    }
+
     fn start_exe(exe: &Path) -> Result<(EngineClient, Receiver<EngineEvent>), EngineError> {
         // Release builds have no console, so there is no stderr to pass on.
         let stderr = if cfg!(debug_assertions) {

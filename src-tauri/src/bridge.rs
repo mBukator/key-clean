@@ -1,5 +1,6 @@
 //! Data sent to the webview. Mirrors `src/shared/types/engine.ts`. Contains no key data.
 
+use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
     EndReason, EngineError, EngineEvent, KeyboardDevice, SessionState, SystemTransition,
 };
@@ -14,6 +15,16 @@ pub const STATUS_EVENT: &str = "engine-status";
 pub struct ErrorDto {
     message_key: String,
     details: String,
+}
+
+impl ErrorDto {
+    /// The app only locks for one of the presets (§11).
+    pub fn not_a_preset(seconds: u64) -> Self {
+        ErrorDto {
+            message_key: "error.invalid_duration".to_owned(),
+            details: format!("{seconds} s is not one of the lock duration presets"),
+        }
+    }
 }
 
 impl From<&EngineError> for ErrorDto {
@@ -34,19 +45,20 @@ pub struct StatusDto {
     last_end_reason: Option<&'static str>,
     error: Option<ErrorDto>,
     engine_available: bool,
-    lock_seconds: u64,
+    /// Whole seconds left in the lock, rounded up (§15), while starting or locked.
+    countdown_secs: Option<u64>,
 }
 
 impl StatusDto {
     /// The status before any engine event arrives.
-    pub fn initial(dev_cap: bool, lock_seconds: u64) -> Self {
+    pub fn initial(dev_cap: bool) -> Self {
         StatusDto {
             state: state_name(SessionState::Idle),
             dev_cap,
             last_end_reason: None,
             error: None,
             engine_available: false,
-            lock_seconds,
+            countdown_secs: None,
         }
     }
 
@@ -66,12 +78,39 @@ impl StatusDto {
                 }
                 self.state = state_name(status.state);
                 self.dev_cap = status.dev_cap;
+                self.countdown_secs = match status.state {
+                    SessionState::Starting | SessionState::Locked => {
+                        status.session_remaining.map(countdown::display_secs)
+                    }
+                    SessionState::Idle | SessionState::Unlocking => None,
+                };
             }
             EngineEvent::SessionEnded { reason } => {
                 self.last_end_reason = Some(end_reason_name(*reason));
             }
             EngineEvent::Error(e) => self.error = Some(ErrorDto::from(e)),
             EngineEvent::Notice(_) => {}
+        }
+    }
+}
+
+/// The lock durations the window offers (§11), from `keyclean-core`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LockOptionsDto {
+    preset_seconds: Vec<u64>,
+    default_seconds: u64,
+}
+
+impl LockOptionsDto {
+    /// The presets and the default.
+    pub fn current() -> Self {
+        LockOptionsDto {
+            preset_seconds: presets::DURATION_PRESETS
+                .iter()
+                .map(|d| d.as_secs())
+                .collect(),
+            default_seconds: presets::DEFAULT_DURATION.as_secs(),
         }
     }
 }
@@ -120,22 +159,27 @@ fn end_reason_name(reason: EndReason) -> &'static str {
 mod tests {
     use super::*;
     use keyclean_win::EngineStatus;
+    use std::time::Duration;
 
     fn status(state: SessionState) -> EngineEvent {
+        status_with(state, None)
+    }
+
+    fn status_with(state: SessionState, session_remaining: Option<Duration>) -> EngineEvent {
         EngineEvent::Status(EngineStatus {
             state,
             dev_cap: true,
-            session_remaining: None,
-            hard_deadline_remaining: None,
+            session_remaining,
+            hard_deadline_remaining: session_remaining.map(|d| d + Duration::from_secs(10)),
         })
     }
 
     #[test]
     fn serializes_camel_case() {
-        let mut dto = StatusDto::initial(true, 10);
+        let mut dto = StatusDto::initial(true);
         dto.set_engine(true, None);
         let json = serde_json::to_value(&dto).unwrap();
-        assert_eq!(json["lockSeconds"], 10);
+        assert!(json["countdownSecs"].is_null());
         assert_eq!(json["state"], "idle");
         assert_eq!(json["devCap"], true);
         assert_eq!(json["engineAvailable"], true);
@@ -144,7 +188,7 @@ mod tests {
 
     #[test]
     fn a_session_round_trip() {
-        let mut dto = StatusDto::initial(true, 10);
+        let mut dto = StatusDto::initial(true);
         dto.set_engine(true, None);
         dto.apply(&EngineEvent::Error(EngineError::AlreadyActive));
         assert!(dto.error.is_some());
@@ -161,6 +205,46 @@ mod tests {
         dto.apply(&status(SessionState::Idle));
         assert_eq!(dto.state, "idle");
         assert_eq!(dto.last_end_reason, Some("emergency"));
+    }
+
+    #[test]
+    fn countdown_follows_the_session() {
+        let mut dto = StatusDto::initial(false);
+        dto.apply(&status_with(
+            SessionState::Starting,
+            Some(Duration::from_secs(120)),
+        ));
+        assert_eq!(dto.countdown_secs, Some(120));
+        dto.apply(&status_with(
+            SessionState::Locked,
+            Some(Duration::from_millis(119_000)),
+        ));
+        assert_eq!(dto.countdown_secs, Some(119));
+        dto.apply(&status_with(
+            SessionState::Locked,
+            Some(Duration::from_millis(400)),
+        ));
+        assert_eq!(dto.countdown_secs, Some(1), "rounds up");
+        dto.apply(&status(SessionState::Unlocking));
+        assert_eq!(dto.countdown_secs, None);
+        dto.apply(&status(SessionState::Idle));
+        assert_eq!(dto.countdown_secs, None);
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(json["countdownSecs"].is_null());
+    }
+
+    #[test]
+    fn lock_options_come_from_the_presets() {
+        let json = serde_json::to_value(LockOptionsDto::current()).unwrap();
+        assert_eq!(json["presetSeconds"], serde_json::json!([30, 60, 120, 300]));
+        assert_eq!(json["defaultSeconds"], 120);
+    }
+
+    #[test]
+    fn non_preset_error_uses_the_invalid_duration_string() {
+        let json = serde_json::to_value(ErrorDto::not_a_preset(7)).unwrap();
+        assert_eq!(json["messageKey"], "error.invalid_duration");
+        assert!(json["details"].as_str().unwrap().contains("7 s"));
     }
 
     #[test]

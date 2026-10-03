@@ -11,6 +11,7 @@
 
 use std::time::Duration;
 
+use keyclean_win::keyclean_core::countdown;
 use keyclean_win::keyclean_core::policy::{DEV_MAX_HARD_DEADLINE, DEV_MAX_SESSION};
 use keyclean_win::{Engine, EngineEvent, LockRequest};
 
@@ -59,8 +60,12 @@ fn main() {
         let remaining = give_up.saturating_sub(started.elapsed());
         match events.recv_timeout(remaining) {
             Ok(EngineEvent::Status(status)) => {
+                let left = status
+                    .session_remaining
+                    .map(|r| format!(", {} s left", countdown::display_secs(r)))
+                    .unwrap_or_default();
                 println!(
-                    "state: {:?}{}",
+                    "state: {:?}{left}{}",
                     status.state,
                     if status.dev_cap { " (DEV CAP)" } else { "" }
                 );

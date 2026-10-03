@@ -101,7 +101,7 @@ Full rules and examples: `docs/development/git-workflow.md`. Enforced by commitl
 bun install                  # deps + husky hooks
 bun tauri dev                # run the app (Max only — it can engage a real lock)
 bun run build                # frontend → dist/ (src-tauri needs dist/ to compile)
-bun tauri build              # release build; bundling is off until the packaging milestone
+bun tauri build              # release build -> target/release/keyclean.exe; bundling off until M11
 cargo test --workspace       # pure-logic tests (never installs hooks)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all              # / --check

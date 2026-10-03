@@ -17,7 +17,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | ---------------------------------------------- | ----------- | ------------------------------------------- |
 | M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
 | M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | not started                                 |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
 | M3 Safety hardening                            | §53 Phase 2 | not started                                 |
 | M4 Device detection                            | §52 Phase 1 | not started                                 |
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
@@ -101,7 +101,25 @@ Acceptance (§62 and §60 "Input"):
 
 ### M2 - Timer and automatic unlock
 
-Status: not started. Manual test: `docs/testing/manual/M2.md`.
+Status: **done** (verified by Max, 2026-10-03). Verification: `cargo run -p keyclean-e2e` plus Parts
+B and C of `docs/testing/manual/M2.md`.
+
+Harness, 2026-10-03: S1-S14 and S16 passed (S16: the hard deadline alone released a 3 s lock after
+13.01 s). S15 first failed with a single countdown status because the harness ran a `keyclean.exe`
+built before M2 (`cargo run -p keyclean-e2e` doesn't rebuild the app); the harness now skips the app
+checks when the exe is older than its sources. Re-run on a fresh build: S15 passed (5..1, worst tick
+7 ms off, released after 5.01 s). Manual Parts B and C all passed, including the 30 s, 1 min, 2 min and
+5 min presets in a release build against a stopwatch, the 5 min lock with KeyClean in the background,
+Unlock now, Ctrl+Alt+K, a kill mid-lock, and idle CPU after a lock.
+
+The first manual run also found that the window couldn't call the new commands (missing from
+`build.rs` and the capability); fixed, with a test that keeps the three lists in sync.
+
+Done in code: presets 30 s / 1 min / 2 min / 5 min (default 2 min) in `keyclean-core::presets`, the
+app rejects any other duration; the engine emits a status each time the displayed second changes
+(`TIMER_COUNTDOWN`, rounding in `keyclean-core::countdown`), never at idle or while draining; **Unlock
+now** button (`UserRequest`); "Cleaning complete" after a `Timeout`. The max-lock setting stays at its
+30 min default until settings land (M7).
 
 Scope: duration presets (§11), countdown events from the engine, accurate monotonic session timer
 (QPC), automatic unlock (§16), "unlock now" request from the UI. Release builds allow real durations up
@@ -109,10 +127,10 @@ to the max-lock setting (60 min absolute ceiling, ADR 0006).
 
 Acceptance (§60 "Timer"):
 
-- [ ] Preset durations work
-- [ ] Countdown is accurate
-- [ ] Automatic unlock works
-- [ ] Safety timeout works
+- [x] Preset durations work (M2.md steps 6-9, release build)
+- [x] Countdown is accurate (S15; M2.md steps 6-7 against a stopwatch)
+- [x] Automatic unlock works (M2.md steps 4, 6-8)
+- [x] Safety timeout works (S16; dev cap in step 4)
 
 ## Phase 2 - Safety (§53)
 
@@ -319,5 +337,7 @@ Not planned. Only after the core product is stable, and only if it passes §65.
   unlocking types nothing (the drain stays while blocked keys repeat, up to 30 s and never past the hard deadline).
 - **E2E on CI:** `.github/workflows/e2e.yml` (manual trigger) checks whether hosted Windows runners can
   run the harness. If they can, consider running it on PRs.
-- **Repo setup (Max):** push `main` and `develop` once, then enable branch protection for both in GitHub
-  settings. Claude doesn't change repo settings.
+- **Repo setup:** done 2026-10-03. `main` and `develop` are protected like Max's other repos: PRs
+  only, one code-owner review (`.github/CODEOWNERS`), checks `checks` and `pr-title` up to date,
+  linear history, resolved conversations, no force-push or deletion, admins may bypass. Squash merge
+  only; branches are deleted after merge. Claude changes repo settings only when Max asks.

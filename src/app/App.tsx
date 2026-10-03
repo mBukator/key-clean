@@ -9,6 +9,7 @@ import {
     type EngineStatus,
     type ErrorInfo,
     type Keyboard,
+    type LockOptions,
     type SessionState,
 } from "../shared/types/engine";
 
@@ -30,6 +31,28 @@ const END_REASON_KEYS: Record<EndReason, StringKey> = {
     engineError: "endReason.engineError",
     userRequest: "endReason.userRequest",
 };
+
+const DURATION_KEYS = {
+    seconds: { one: "duration.seconds.one", other: "duration.seconds.other" },
+    minutes: { one: "duration.minutes.one", other: "duration.minutes.other" },
+} satisfies Record<string, Record<"one" | "other", StringKey>>;
+
+const plurals = new Intl.PluralRules("en");
+
+/** "30 seconds", "1 minute", "5 minutes". */
+function durationLabel(seconds: number): string {
+    const unit = seconds % 60 === 0 ? "minutes" : "seconds";
+    const count = unit === "minutes" ? seconds / 60 : seconds;
+    const form = plurals.select(count) === "one" ? "one" : "other";
+    return t(DURATION_KEYS[unit][form], { count });
+}
+
+/** "02:00" (§15). */
+function formatCountdown(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    const rest = seconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+}
 
 function toErrorInfo(err: unknown): ErrorInfo {
     if (typeof err === "object" && err !== null && "messageKey" in err) {
@@ -65,6 +88,8 @@ function ErrorMessage({ error }: { error: ErrorInfo }) {
 
 export function App() {
     const [status, setStatus] = useState<EngineStatus | null>(null);
+    const [options, setOptions] = useState<LockOptions | null>(null);
+    const [selected, setSelected] = useState<number | null>(null);
     const [keyboards, setKeyboards] = useState<Keyboard[] | null>(null);
     const [requestError, setRequestError] = useState<ErrorInfo | null>(null);
 
@@ -93,6 +118,12 @@ export function App() {
                 setRequestError(toErrorInfo(err));
             });
 
+        invoke<LockOptions>("get_lock_options")
+            .then(setOptions)
+            .catch((err: unknown) => {
+                setRequestError(toErrorInfo(err));
+            });
+
         invoke<Keyboard[]>("list_keyboards")
             .then(setKeyboards)
             .catch((err: unknown) => {
@@ -105,16 +136,30 @@ export function App() {
         };
     }, []);
 
+    const seconds = selected ?? options?.defaultSeconds ?? null;
+
     const lock = () => {
+        if (seconds === null) {
+            return;
+        }
         setRequestError(null);
-        invoke("lock_keyboard").catch((err: unknown) => {
+        invoke("lock_keyboard", { seconds }).catch((err: unknown) => {
+            setRequestError(toErrorInfo(err));
+        });
+    };
+
+    const unlock = () => {
+        setRequestError(null);
+        invoke("unlock_keyboard").catch((err: unknown) => {
             setRequestError(toErrorInfo(err));
         });
     };
 
     const state = status?.state ?? "idle";
-    const canLock = status?.engineAvailable === true && state === "idle";
+    const idle = state === "idle";
+    const canLock = status?.engineAvailable === true && idle && seconds !== null;
     const error = requestError ?? status?.error ?? null;
+    const countdown = status?.countdownSecs ?? null;
 
     return (
         <main className="flex min-h-screen flex-col gap-6 p-6">
@@ -131,23 +176,72 @@ export function App() {
             </header>
 
             <section className="flex flex-col gap-3">
-                <button
-                    type="button"
-                    onClick={lock}
-                    disabled={!canLock}
-                    className="self-start rounded bg-neutral-900 px-5 py-3 text-white disabled:opacity-40"
-                >
-                    {t("lock.button", { seconds: status?.lockSeconds ?? "…" })}
-                </button>
+                {options && (
+                    <fieldset disabled={!idle} className="flex flex-col gap-2">
+                        <legend className="mb-1 font-medium">
+                            {t("lock.durationLabel")}
+                        </legend>
+                        <div className="flex flex-wrap gap-x-4 gap-y-2">
+                            {options.presetSeconds.map((preset) => (
+                                <label key={preset} className="flex items-center gap-2">
+                                    <input
+                                        type="radio"
+                                        name="duration"
+                                        value={preset}
+                                        checked={seconds === preset}
+                                        onChange={() => {
+                                            setSelected(preset);
+                                        }}
+                                    />
+                                    {durationLabel(preset)}
+                                </label>
+                            ))}
+                        </div>
+                    </fieldset>
+                )}
+                <div className="flex flex-wrap items-center gap-3">
+                    <button
+                        type="button"
+                        onClick={lock}
+                        disabled={!canLock}
+                        className="rounded bg-neutral-900 px-5 py-3 text-white disabled:opacity-40"
+                    >
+                        {t("lock.button")}
+                    </button>
+                    {state === "locked" && (
+                        <button
+                            type="button"
+                            onClick={unlock}
+                            className="rounded border border-neutral-900 px-5 py-3"
+                        >
+                            {t("lock.unlockNow")}
+                        </button>
+                    )}
+                </div>
                 <p className="text-sm text-neutral-600">{t("lock.hint")}</p>
+                {countdown !== null && (
+                    <p className="flex flex-wrap items-baseline gap-2">
+                        <span className="text-sm text-neutral-600">
+                            {t("countdown.label")}
+                        </span>
+                        <span
+                            role="timer"
+                            className="font-mono text-4xl font-semibold tabular-nums"
+                        >
+                            {formatCountdown(countdown)}
+                        </span>
+                    </p>
+                )}
                 <p aria-live="polite" className="font-medium">
                     {t(STATE_KEYS[state])}
                 </p>
-                {status?.lastEndReason && state === "idle" && (
-                    <p className="text-sm text-neutral-600">
-                        {t("status.lastEnd", {
-                            reason: t(END_REASON_KEYS[status.lastEndReason]),
-                        })}
+                {status?.lastEndReason && idle && (
+                    <p aria-live="polite" className="text-sm text-neutral-600">
+                        {status.lastEndReason === "timeout"
+                            ? t("status.complete")
+                            : t("status.lastEnd", {
+                                  reason: t(END_REASON_KEYS[status.lastEndReason]),
+                              })}
                     </p>
                 )}
                 {error && <ErrorMessage error={error} />}
