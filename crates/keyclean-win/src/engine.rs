@@ -5,6 +5,10 @@
 //! channel. The UI only sends requests and displays events, so a hung or closed webview can't
 //! affect unlocking (invariant 3).
 //!
+//! While locked, a countdown timer emits a status each time the displayed second changes (§15).
+//! It only reports and never ends a session on time; that is left to the exits below. If it can't
+//! be armed at all, the session ends with an engine error rather than show a frozen countdown.
+//!
 //! Exits from a lock, each independent of the others (invariant 1):
 //! - the session timer (`SetTimer` on the engine window) → `Timeout`;
 //! - the hard deadline, checked inside the hook on every event → `HardDeadline`;
@@ -20,6 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use keyclean_core::countdown;
 use keyclean_core::keystate::Phase;
 use keyclean_core::policy::{
     DEFAULT_MAX_LOCK, DRAIN_IDLE_TIMEOUT, DrainCheck, LockPlan, SafetyProfile, drain_check,
@@ -51,8 +56,8 @@ use crate::devices::{self, KeyboardDevice};
 use crate::error::EngineError;
 use crate::hook;
 use crate::msg::{
-    TIMER_DRAIN, TIMER_SESSION, WM_COMMANDS_READY, WM_HOOK_CHORD, WM_HOOK_DEADLINE,
-    WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
+    TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_SESSION, WM_COMMANDS_READY, WM_HOOK_CHORD,
+    WM_HOOK_DEADLINE, WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
 };
 use crate::qpc::{self, QpcClock};
 use crate::watchdog::Watchdog;
@@ -135,7 +140,12 @@ pub enum EngineEvent {
 }
 
 enum Command {
-    Lock(LockRequest),
+    Lock {
+        request: LockRequest,
+        /// False only for the testkit's safety-timeout check: then only the hard deadline (hook
+        /// and watchdog) or another exit can end the lock.
+        session_timer: bool,
+    },
     Unlock,
     Shutdown,
 }
@@ -198,7 +208,21 @@ impl Engine {
 
     /// Asks the engine to lock the keyboard. The outcome arrives as events.
     pub fn lock(&self, request: LockRequest) -> Result<(), EngineError> {
-        self.send(Command::Lock(request))
+        self.send(Command::Lock {
+            request,
+            session_timer: true,
+        })
+    }
+
+    /// Testkit only: locks without arming the session timer, so the end-to-end harness can check
+    /// that the hard deadline alone releases input. In-process only; the engine process protocol
+    /// can't request it.
+    #[cfg(feature = "testkit")]
+    pub fn lock_without_session_timer(&self, request: LockRequest) -> Result<(), EngineError> {
+        self.send(Command::Lock {
+            request,
+            session_timer: false,
+        })
     }
 
     /// Asks the engine to end the current session (`EndReason::UserRequest`).
@@ -264,6 +288,8 @@ struct EngineState {
     session_notify: bool,
     /// QPC ticks when the current drain began.
     drain_started_ticks: u64,
+    /// The countdown second last reported while locked.
+    last_countdown_secs: Option<u64>,
 }
 
 thread_local! {
@@ -323,6 +349,7 @@ fn engine_thread(
         power_notify,
         session_notify,
         drain_started_ticks: 0,
+        last_countdown_secs: None,
     };
     let _ = STATE.try_with(|cell| *cell.borrow_mut() = Some(state));
     let _ = ready.send(Ok(hwnd.0 as isize));
@@ -457,6 +484,7 @@ unsafe extern "system" fn window_proc(
         WM_TIMER => match wparam.0 {
             TIMER_SESSION => with_state(EngineState::on_session_timer),
             TIMER_DRAIN => with_state(EngineState::on_drain_timeout),
+            TIMER_COUNTDOWN => with_state(EngineState::on_countdown_timer),
             _ => {}
         },
         WM_POWERBROADCAST => {
@@ -504,6 +532,11 @@ fn millis(d: Duration) -> u32 {
     u32::try_from(d.as_millis()).unwrap_or(u32::MAX).max(1)
 }
 
+/// Like [`millis`], but rounded up, so a countdown timer doesn't fire before its second changes.
+fn millis_ceil(d: Duration) -> u32 {
+    millis(d.saturating_add(Duration::from_nanos(999_999)))
+}
+
 impl EngineState {
     fn emit(&self, event: EngineEvent) {
         let _ = self.events.send(event);
@@ -531,7 +564,10 @@ impl EngineState {
     fn handle_commands(&mut self) {
         while let Ok(command) = self.commands.try_recv() {
             match command {
-                Command::Lock(request) => self.lock(request),
+                Command::Lock {
+                    request,
+                    session_timer,
+                } => self.lock(request, session_timer),
                 Command::Unlock => self.end(EndReason::UserRequest),
                 Command::Shutdown => {
                     self.end_now(EndReason::UserRequest);
@@ -542,7 +578,7 @@ impl EngineState {
         }
     }
 
-    fn lock(&mut self, request: LockRequest) {
+    fn lock(&mut self, request: LockRequest, session_timer: bool) {
         if self.session.state() != SessionState::Idle {
             self.emit(EngineEvent::Error(EngineError::AlreadyActive));
             return;
@@ -585,11 +621,51 @@ impl EngineState {
         let _ = self.session.locked();
 
         // SAFETY: `self.hwnd` is this thread's window; the timer is killed in `finish`.
-        if unsafe { SetTimer(Some(self.hwnd), TIMER_SESSION, millis(plan.session), None) } == 0 {
+        if session_timer
+            && unsafe { SetTimer(Some(self.hwnd), TIMER_SESSION, millis(plan.session), None) } == 0
+        {
             self.fail(EngineError::Timer);
             return;
         }
+        let remaining = self.session.remaining(QpcClock.now());
+        self.last_countdown_secs = remaining.map(countdown::display_secs);
         self.emit_status();
+        if let Some(remaining) = remaining {
+            self.arm_countdown(remaining);
+        }
+    }
+
+    /// Reports the countdown when its displayed second changes, then waits for the next change.
+    fn on_countdown_timer(&mut self) {
+        let remaining = match self.session.state() {
+            SessionState::Locked => self.session.remaining(QpcClock.now()),
+            _ => None,
+        };
+        let Some(remaining) = remaining else {
+            self.kill_timer(TIMER_COUNTDOWN);
+            return;
+        };
+        let shown = countdown::display_secs(remaining);
+        if self.last_countdown_secs != Some(shown) {
+            self.last_countdown_secs = Some(shown);
+            self.emit_status();
+        }
+        self.arm_countdown(remaining);
+    }
+
+    fn arm_countdown(&mut self, remaining: Duration) {
+        match countdown::next_tick(remaining) {
+            Some(after) => {
+                // SAFETY: `self.hwnd` is this thread's window; the timer is killed in `end` and
+                // `finish`.
+                let armed =
+                    unsafe { SetTimer(Some(self.hwnd), TIMER_COUNTDOWN, millis_ceil(after), None) };
+                if armed == 0 {
+                    self.fail(EngineError::Timer);
+                }
+            }
+            None => self.kill_timer(TIMER_COUNTDOWN),
+        }
     }
 
     fn on_session_timer(&mut self) {
@@ -612,6 +688,7 @@ impl EngineState {
             return; // Already ending or idle: a duplicate signal.
         }
         self.kill_timer(TIMER_SESSION);
+        self.kill_timer(TIMER_COUNTDOWN);
         hook::enter_draining();
         self.emit_status();
 
@@ -701,6 +778,8 @@ impl EngineState {
     fn finish(&mut self) {
         self.kill_timer(TIMER_SESSION);
         self.kill_timer(TIMER_DRAIN);
+        self.kill_timer(TIMER_COUNTDOWN);
+        self.last_countdown_secs = None;
         match self.hook.take() {
             Some(handle) => {
                 if hook::uninstall(handle).is_err() {
