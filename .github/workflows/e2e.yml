@@ -1,0 +1,34 @@
+name: E2E (trial)
+
+# Runs the end-to-end harness (ADR 0008) on a hosted runner. Manual trigger only: it engages real
+# keyboard locks, which is harmless on a runner but should never run on every push. Exit codes:
+# 1 a check failed, 2 environment check failed (no usable interactive desktop for low-level hooks),
+# 3 setup error.
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    e2e:
+        runs-on: windows-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.3.11
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: bun install --frozen-lockfile
+            - run: bun run build
+            - run: cargo build -p keyclean-win --example lock_smoke
+            - run: cargo build -p keyclean
+            - run: cargo run -p keyclean-e2e
+            - if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: e2e-report
+                  path: target/debug/e2e-report.md
+                  if-no-files-found: ignore

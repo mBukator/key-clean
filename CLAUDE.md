@@ -38,7 +38,7 @@ These override everything, including my own prompts. If a request conflicts with
 - Tauri 2, Windows x64 only. Rust stable with the `windows` crate for Win32.
 - UI: React + TypeScript (strict) + Vite + Tailwind v4; `motion` only for small transitions. Not Next.js — Tauri needs a static SPA.
 - Official Tauri plugins where they exist (single-instance, global-shortcut, autostart, notification, store). Every new dependency gets a one-line justification in the commit message or an ADR.
-- Package manager: pnpm.
+- Package manager: bun (ADR 0001). Never pnpm, npm or yarn.
 
 ## Layout (maps to the §49 layers)
 
@@ -58,7 +58,8 @@ docs/  scripts/  assets/
 
 ## Engine model
 
-- One dedicated engine thread owns the hooks, Raw Input registration, a hidden top-level window for power/session/shutdown/device notifications (message-only windows miss broadcasts), and its own message loop.
+- The engine runs in its own process (ADR 0009): the app starts `keyclean.exe --engine --parent <pid>` (no WebView, because a focused WebView2 window in the hook's own process makes Windows skip the hook) and talks to it over line-delimited JSON on stdin/stdout, session events only. It exits when the app does (stdin EOF, or the parent watcher).
+- Inside it, one dedicated engine thread owns the hooks, Raw Input registration, a hidden top-level window for power/session/shutdown/device notifications (message-only windows miss broadcasts), and its own message loop.
 - Hook callbacks read shared state through atomics only. Commands enter the engine thread as posted messages; events leave through a channel.
 - A separate watchdog thread enforces the hard deadline.
 - Never set debugger breakpoints inside hook callbacks — pausing there stalls input system-wide.
@@ -67,12 +68,25 @@ docs/  scripts/  assets/
 
 - One milestone at a time from `docs/ROADMAP.md`. Plan first. Don't start the next milestone until I confirm the current one passed manual testing.
 - **Never engage a real input lock yourself.** Don't run the app, examples, or anything that installs hooks. You may run builds, `cargo test` (pure logic), clippy, fmt, typecheck, and lint. When hook behavior needs verifying, write the manual test and ask me to run it.
-- Automated tests cover `keyclean-core` with a fake clock. OS behavior is verified with `docs/testing/manual/<milestone>.md`: numbered steps, an expected result per step, and every step doable without the keyboard (mouse, a pre-armed PowerShell command such as `Start-Sleep 5; Stop-Process -Name keyclean -Force`, or the timer).
+- Automated tests cover `keyclean-core` with a fake clock. OS behavior is verified by the end-to-end harness `crates/keyclean-e2e` (ADR 0008; engages real locks, so Max runs it — write scenarios, never run them) plus `docs/testing/manual/<milestone>.md` for what can't be synthesized: numbered steps, an expected result per step, and every step doable without the keyboard (mouse, a pre-armed PowerShell command such as `Start-Sleep 5; Stop-Process -Name keyclean -Force`, or the timer).
 - Verify Win32 and Tauri APIs against official docs (learn.microsoft.com, docs.rs, v2.tauri.app) rather than memory, and link sources in research notes. Tag claims [docs], [tested], or [assumption].
 - Any deviation from `docs/SPEC.md` or this file needs an ADR: `docs/decisions/NNNN-title.md` (context, decision, alternatives, consequences).
 - After each milestone: update ROADMAP checkboxes, `CHANGELOG.md` (Unreleased), and the Commands section below, then give a handoff summary — what changed, how to test, risks, open questions.
-- Git: small commits, Conventional Commits with scopes (engine, core, app, ui, i18n, docs, ci). Never push, never rewrite history.
 - Keep this file under ~200 lines; detail belongs in `docs/`.
+
+## Git workflow (MUST)
+
+Full rules and examples: `docs/development/git-workflow.md`. Enforced by commitlint + husky.
+
+1. Conventional Commits `<type>(<scope>): <subject>`. Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.
+2. Scope required: `engine`, `core`, `app`, `ui`, `i18n`, `docs`, `ci`, `repo` (root tooling/config), `deps`.
+3. Subject: imperative, lowercase first letter, no trailing period, header ≤72 chars.
+4. Every commit has a body: blank line, wrapped ~72, what and why (not how), bullets for multiple changes. New dependencies get a one-line justification there.
+5. Never mention Claude or AI in commits or PRs — no `Co-Authored-By` trailer, no session links. Hyphens, not em/en dashes, in commit messages and PR text.
+6. `main` (tagged releases) and `develop` (integration) are protected. Work branches come off `develop`: `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`; `hotfix/*` comes off `main`.
+7. PRs target `develop`, fill `.github/pull_request_template.md` completely, use a Conventional Commits title, and are squash-merged after CI passes. Issues use the templates.
+8. Claude may push work branches and open PRs (`gh pr create`). Never push to `main`/`develop`, never merge, never force-push, never rewrite history, never `--no-verify` — fix a broken hook instead.
+9. Before a PR: `cargo fmt --all --check && bun run build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bun run typecheck && bun run lint && bun run format:check`.
 
 ## Code standards
 
@@ -83,7 +97,23 @@ docs/  scripts/  assets/
 
 ## Commands
 
-_(Fill in after scaffolding: dev, build, bundle, test, lint, typecheck.)_
+```
+bun install                  # deps + husky hooks
+bun tauri dev                # run the app (Max only — it can engage a real lock)
+bun run build                # frontend → dist/ (src-tauri needs dist/ to compile)
+bun tauri build              # release build; bundling is off until the packaging milestone
+cargo test --workspace       # pure-logic tests (never installs hooks)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all              # / --check
+bun run typecheck
+bun run lint
+bun run format               # / format:check
+bunx merlin                  # interactive commit wizard
+cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock
+cargo run -p keyclean-e2e    # Max only — automated M1 checks (~2 min, locks repeatedly)
+```
+
+If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).
 
 ## Out of scope unless I say otherwise
 

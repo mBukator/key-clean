@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest an improvement to KeyClean.
+labels: ["enhancement"]
+body:
+    - type: checkboxes
+      id: product-rule
+      attributes:
+          label: Product rule
+          options:
+              - label: This makes KeyClean better at safely controlling, cleaning, or diagnosing input devices on Windows (§65)
+                required: true
+    - type: textarea
+      id: problem
+      attributes:
+          label: Problem
+          description: What are you trying to do, and what gets in the way today?
+      validations:
+          required: true
+    - type: textarea
+      id: proposal
+      attributes:
+          label: Proposed solution
+          description: How should KeyClean behave?
+      validations:
+          required: true
+    - type: textarea
+      id: alternatives
+      attributes:
+          label: Alternatives considered
