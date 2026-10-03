@@ -25,8 +25,16 @@ export interface EngineStatus {
     lastEndReason: EndReason | null;
     error: ErrorInfo | null;
     engineAvailable: boolean;
-    /** Length of the lock the Lock button requests, in seconds. */
-    lockSeconds: number;
+    /** Whole seconds left in the lock, rounded up, while starting or locked; otherwise null. */
+    countdownSecs: number | null;
+}
+
+/** Mirrors `LockOptionsDto` in src-tauri/src/bridge.rs. */
+export interface LockOptions {
+    /** The lock durations offered, in seconds, shortest first. */
+    presetSeconds: number[];
+    /** The preset selected by default, in seconds. */
+    defaultSeconds: number;
 }
 
 export interface Keyboard {

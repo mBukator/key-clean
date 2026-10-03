@@ -17,13 +17,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use keyclean_win::keyclean_core::policy::SafetyProfile;
+use keyclean_win::keyclean_core::presets;
 use keyclean_win::{EngineClient, EngineError, EngineEvent, LockRequest, safety_profile};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
-use bridge::{ErrorDto, KeyboardDto, STATUS_EVENT, StatusDto};
-
-/// Milestone 1 lock length. Debug builds are capped by the engine anyway (15 s / 20 s).
-const M1_LOCK: Duration = Duration::from_secs(10);
+use bridge::{ErrorDto, KeyboardDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
 const RELAY_DRAIN: Duration = Duration::from_secs(1);
@@ -41,14 +39,34 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Locks for `seconds`, which must be one of the presets. The engine still applies the safety
+/// policy (max lock, hard deadline, debug dev cap).
 #[tauri::command]
-fn lock_keyboard(engine: State<'_, EngineSlot>) -> Result<(), ErrorDto> {
+fn lock_keyboard(engine: State<'_, EngineSlot>, seconds: u64) -> Result<(), ErrorDto> {
+    let duration = Duration::from_secs(seconds);
+    if !presets::is_preset(duration) {
+        return Err(ErrorDto::not_a_preset(seconds));
+    }
     match guard(&engine.0).as_ref() {
         Some(engine) => engine
-            .lock(LockRequest::new(M1_LOCK))
+            .lock(LockRequest::new(duration))
             .map_err(|e| ErrorDto::from(&e)),
         None => Err(ErrorDto::from(&EngineError::NotRunning)),
     }
+}
+
+/// Asks the engine to end the current lock now (`UserRequest`).
+#[tauri::command]
+fn unlock_keyboard(engine: State<'_, EngineSlot>) -> Result<(), ErrorDto> {
+    match guard(&engine.0).as_ref() {
+        Some(engine) => engine.unlock().map_err(|e| ErrorDto::from(&e)),
+        None => Err(ErrorDto::from(&EngineError::NotRunning)),
+    }
+}
+
+#[tauri::command]
+fn get_lock_options() -> LockOptionsDto {
+    LockOptionsDto::current()
 }
 
 #[tauri::command]
@@ -70,10 +88,7 @@ fn list_keyboards(engine: State<'_, EngineSlot>) -> Result<Vec<KeyboardDto>, Err
 fn start_engine(app: &AppHandle) {
     let dev_cap = safety_profile() == SafetyProfile::Dev;
     // Managed before the engine starts, so the relay never drops an event.
-    app.manage(StatusStore(Mutex::new(StatusDto::initial(
-        dev_cap,
-        M1_LOCK.as_secs(),
-    ))));
+    app.manage(StatusStore(Mutex::new(StatusDto::initial(dev_cap))));
     let set_engine = |available: bool, error: Option<ErrorDto>| {
         if let Some(store) = app.try_state::<StatusStore>() {
             guard(&store.0).set_engine(available, error);
@@ -190,6 +205,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             lock_keyboard,
+            unlock_keyboard,
+            get_lock_options,
             get_status,
             list_keyboards
         ])
