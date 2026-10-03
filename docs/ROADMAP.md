@@ -16,7 +16,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | Milestone                                      | Phase       | Status                                           |
 | ---------------------------------------------- | ----------- | ------------------------------------------------ |
 | M0 Scaffold and tooling                        | §51 Phase 0 | **code-complete - awaiting manual verification** |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **code-complete - awaiting manual verification** |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
 | M2 Timer and automatic unlock                  | §52 Phase 1 | not started                                      |
 | M3 Safety hardening                            | §53 Phase 2 | not started                                      |
 | M4 Device detection                            | §52 Phase 1 | not started                                      |
@@ -41,7 +41,8 @@ Research is done: `docs/research/phase-0-windows-input.md`, `docs/research/fail-
 
 ### M0 - Scaffold and tooling
 
-Status: **code-complete - awaiting manual verification**. Manual test: none of its own; M1.md step 1
+Status: **code-complete - awaiting manual verification**; only CI on the pushed branch is left.
+Manual test: none of its own; M1.md step 1
 confirms both targets build and start.
 
 Scope: Cargo workspace (`keyclean-core`, `keyclean-win`, `src-tauri`), `panic = "abort"` profiles, bun +
@@ -51,16 +52,16 @@ CHANGELOG, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, Apache-2.0 LICENSE), git wor
 
 Acceptance:
 
-- [ ] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace` pass
-- [ ] `bun run typecheck`, `bun run lint`, `bun run format:check` pass
+- [x] `bun run typecheck`, `bun run lint`, `bun run format:check` pass
 - [ ] CI passes on the pushed branch
-- [ ] Commit hooks run (commitlint, lint-staged, pre-push gate)
-- [ ] App launches (`bun tauri dev`) - §60 "Launches successfully"
+- [x] Commit hooks run (commitlint, lint-staged, pre-push gate)
+- [x] App launches (`bun tauri dev`) - §60 "Launches successfully"
 
 ### M1 - Keyboard lock, emergency unlock, hard deadline (§62)
 
-Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+Status: **done** (verified by Max, 2026-10-03). Verification: `cargo run -p keyclean-e2e`
 (automated harness, ADR 0008) plus the manual part of `docs/testing/manual/M1.md`.
 
 Automated harness: **12/12 passed** on Max's machine (Windows 11 25H2), 2026-10-02. Part B results
@@ -86,15 +87,15 @@ M1 so no build can lock indefinitely.
 
 Acceptance (§62 and §60 "Input"):
 
-- [ ] Press a button → keyboard input stops → Ctrl+Alt+K → keyboard works again immediately
-- [ ] Keyboard can be locked
-- [ ] Keyboard can be unlocked
-- [ ] Emergency shortcut still works, also with KeyClean's own window focused (S14, F1/F3)
-- [ ] Input returns to normal after unlock (no stuck keys)
-- [ ] Safety timeout works (dev cap releases without the chord)
-- [ ] Forced app termination tested (M1.md step 8)
-- [ ] Sleep during a lock leaves KeyClean idle after wake (M1.md step 12)
-- [ ] No keystrokes stored or logged (§60 "Privacy")
+- [x] Press a button → keyboard input stops → Ctrl+Alt+K → keyboard works again immediately
+- [x] Keyboard can be locked
+- [x] Keyboard can be unlocked
+- [x] Emergency shortcut still works, also with KeyClean's own window focused (S14, F1/F3)
+- [x] Input returns to normal after unlock (no stuck keys)
+- [x] Safety timeout works (dev cap releases without the chord)
+- [x] Forced app termination tested (M1.md step 8)
+- [x] Sleep during a lock leaves KeyClean idle after wake (M1.md step 12)
+- [x] No keystrokes stored or logged (§60 "Privacy")
 
 ## Phase 1 - Core lock engine (§52)
 
