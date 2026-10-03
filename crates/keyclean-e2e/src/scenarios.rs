@@ -2,7 +2,7 @@
 //! docs/testing/manual/M2.md when its steps start with "M2".
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -504,13 +504,49 @@ fn app_exe() -> Result<PathBuf, Outcome> {
     let exe = target_dir()
         .map(|d| d.join("keyclean.exe"))
         .ok_or_else(|| Outcome::Skip("can't locate the target directory".into()))?;
-    if exe.exists() {
-        Ok(exe)
-    } else {
-        Err(Outcome::Skip(
+    if !exe.exists() {
+        return Err(Outcome::Skip(
             "build it first: bun run build && cargo build -p keyclean".into(),
-        ))
+        ));
     }
+    // `cargo run -p keyclean-e2e` doesn't rebuild the app, so an old exe would test old code.
+    if let Some(newer) = newer_app_source(&exe) {
+        return Err(Outcome::Skip(format!(
+            "keyclean.exe is older than {}; rebuild it: bun run build && cargo build -p keyclean",
+            newer.display()
+        )));
+    }
+    Ok(exe)
+}
+
+/// A source file the app binary is built from that changed after `exe` was built, if any.
+fn newer_app_source(exe: &Path) -> Option<PathBuf> {
+    let built = std::fs::metadata(exe).and_then(|m| m.modified()).ok()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut pending: Vec<PathBuf> = [
+        "crates/keyclean-core/src",
+        "crates/keyclean-win/src",
+        "src-tauri/src",
+        "src-tauri/capabilities",
+        "src-tauri/build.rs",
+        "src-tauri/tauri.conf.json",
+    ]
+    .iter()
+    .map(|rel| root.join(rel))
+    .collect();
+    while let Some(path) = pending.pop() {
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                pending.extend(entries.filter_map(|e| e.ok().map(|e| e.path())));
+            }
+        } else if meta.modified().is_ok_and(|changed| changed > built) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Starts the app with its stderr (session events only, never keys) saved next to the harness as
