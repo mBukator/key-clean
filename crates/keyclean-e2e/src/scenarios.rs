@@ -1,4 +1,5 @@
-//! The automated M1 checks. Each maps to steps in docs/testing/manual/M1.md.
+//! The automated M1 and M2 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! docs/testing/manual/M2.md when its steps start with "M2".
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -6,14 +7,17 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use keyclean_win::keyclean_core::countdown;
 use keyclean_win::testkit::inject::{Stroke, vk};
 use keyclean_win::testkit::observer::Observer;
 use keyclean_win::testkit::{held, system};
-use keyclean_win::{EndReason, EngineNotice, SystemTransition};
+use keyclean_win::{
+    EndReason, EngineClient, EngineEvent, EngineNotice, SessionState, SystemTransition,
+};
 
 use crate::harness::{
-    EngineRig, PROBE_WINDOW, expect_no_stuck_keys, expect_probes_blocked, expect_probes_pass,
-    expect_reason, send, sleep, wait_until,
+    EngineRig, PROBE_WINDOW, dev_request, expect_no_stuck_keys, expect_probes_blocked,
+    expect_probes_pass, expect_reason, send, sleep, wait_until,
 };
 
 /// Result of one scenario.
@@ -96,6 +100,12 @@ pub fn engine_scenarios() -> Vec<Scenario> {
             name: "Missing key-ups end the drain (DrainTimedOut)",
             run: missing_ups,
         },
+        Scenario {
+            id: "S16",
+            steps: "M2 2",
+            name: "Hard deadline releases a lock with no session timer",
+            run: safety_timeout,
+        },
     ]
 }
 
@@ -124,6 +134,12 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
             steps: "14",
             name: "A second app instance exits",
             run: second_instance,
+        });
+        list.push(Scenario {
+            id: "S15",
+            steps: "M2 1",
+            name: "Countdown ticks through the engine process",
+            run: countdown_ticks,
         });
     }
     list
@@ -230,6 +246,29 @@ fn timer_release(ctx: &mut Ctx<'_>) -> Outcome {
         expect_probes_pass(ctx.observer)?;
         expect_no_stuck_keys()?;
         Ok(format!("3 s lock released after {secs:.2} s"))
+    };
+    let result = run();
+    ctx.rig.ensure_idle();
+    result.into()
+}
+
+/// S16: with the session timer suppressed, the hard deadline alone must end the lock. No input is
+/// sent, so the watchdog (not the hook's per-event check) is the exit under test.
+fn safety_timeout(ctx: &mut Ctx<'_>) -> Outcome {
+    let mut run = || -> Result<String, String> {
+        // Dev hard deadline for a 3 s lock: 3 s + 10 s grace = 13 s.
+        let since = ctx.rig.lock_without_session_timer(Duration::from_secs(3))?;
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(18))?;
+        expect_reason(&ended, EndReason::HardDeadline)?;
+        let secs = ended.after.as_secs_f64();
+        if !(12.9..=14.0).contains(&secs) {
+            return Err(format!("released after {secs:.2} s (expected about 13 s)"));
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "3 s lock without a session timer released by the hard deadline after {secs:.2} s"
+        ))
     };
     let result = run();
     ctx.rig.ensure_idle();
@@ -587,6 +626,121 @@ fn kill_app(ctx: &mut Ctx<'_>) -> Outcome {
     let result = run();
     crate::harness::release_watched_keys();
     sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// How far a countdown tick may be from the second boundary it marks.
+const TICK_TOLERANCE: Duration = Duration::from_millis(150);
+
+/// How long S15 listens after the lock for stray countdown statuses.
+const IDLE_QUIET: Duration = Duration::from_secs(2);
+
+/// S15: a 5 s lock run by the real engine process (app exe in `--engine` mode, over the pipe)
+/// reports 5, 4, 3, 2, 1 once each, on whole-second boundaries, then ends on its timer and sends
+/// nothing more once idle.
+fn countdown_ticks(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let (client, events) = EngineClient::start_from(&exe).map_err(|e| e.details())?;
+        let lock = Duration::from_secs(5);
+        let requested = Instant::now();
+        client.lock(dev_request(lock)).map_err(|e| e.details())?;
+
+        let until = requested + Duration::from_secs(12);
+        // (displayed second, when it arrived)
+        let mut ticks: Vec<(u64, Instant)> = Vec::new();
+        // When the first locked status says the session ends.
+        let mut deadline: Option<Instant> = None;
+        let ended = loop {
+            let left = until.saturating_duration_since(Instant::now());
+            match events.recv_timeout(left) {
+                Ok(EngineEvent::Status(status)) if status.state == SessionState::Locked => {
+                    let now = Instant::now();
+                    if let Some(remaining) = status.session_remaining {
+                        deadline.get_or_insert(now + remaining);
+                        ticks.push((countdown::display_secs(remaining), now));
+                    }
+                }
+                Ok(EngineEvent::SessionEnded { reason }) => break (reason, requested.elapsed()),
+                Ok(EngineEvent::Error(e)) => return Err(format!("engine error: {}", e.details())),
+                Ok(_) => {}
+                Err(_) => return Err("the lock didn't end within 12 s".into()),
+            }
+        };
+        // After the end: one Idle status, then silence (no countdown ticks while idle).
+        let quiet_until = Instant::now() + IDLE_QUIET;
+        let mut idle_statuses = 0;
+        loop {
+            let left = quiet_until.saturating_duration_since(Instant::now());
+            match events.recv_timeout(left) {
+                Ok(EngineEvent::Status(status)) => {
+                    idle_statuses += 1;
+                    if status.state != SessionState::Idle || idle_statuses > 1 {
+                        return Err(format!(
+                            "status {:?} arrived after the lock ended; nothing is expected after \
+                             the Idle status",
+                            status.state
+                        ));
+                    }
+                }
+                Ok(EngineEvent::Error(e)) => return Err(format!("engine error: {}", e.details())),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        if idle_statuses == 0 {
+            return Err("no Idle status after the lock ended".into());
+        }
+        drop(client); // Stops the engine process.
+
+        let (reason, after) = ended;
+        if reason != EndReason::Timeout {
+            return Err(format!("ended with {reason:?}, expected Timeout"));
+        }
+        let secs = after.as_secs_f64();
+        if !(5.0..=5.4).contains(&secs) {
+            return Err(format!("released after {secs:.2} s (expected about 5 s)"));
+        }
+        // The countdown timer may report 0 just before the session timer ends the lock.
+        if ticks.last().is_some_and(|(shown, _)| *shown == 0) {
+            ticks.pop();
+        }
+        let shown: Vec<u64> = ticks.iter().map(|(shown, _)| *shown).collect();
+        if shown != [5, 4, 3, 2, 1] {
+            return Err(format!(
+                "countdown showed {shown:?}, expected [5, 4, 3, 2, 1]"
+            ));
+        }
+        let deadline = deadline.ok_or("no locked status arrived")?;
+        let mut worst = Duration::ZERO;
+        for (shown, at) in ticks.iter().skip(1) {
+            let expected = deadline - Duration::from_secs(*shown);
+            let off = if *at > expected {
+                *at - expected
+            } else {
+                expected - *at
+            };
+            if off > TICK_TOLERANCE {
+                return Err(format!(
+                    "{shown} arrived {} ms off its second boundary (tolerance {} ms)",
+                    off.as_millis(),
+                    TICK_TOLERANCE.as_millis()
+                ));
+            }
+            worst = worst.max(off);
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "showed 5..1 on time (worst {} ms off), released after {secs:.2} s",
+            worst.as_millis()
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
     result.into()
 }
 
