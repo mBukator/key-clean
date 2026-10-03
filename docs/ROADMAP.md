@@ -63,12 +63,20 @@ Acceptance:
 Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
 (automated harness, ADR 0008) plus the manual part of `docs/testing/manual/M1.md`.
 
-Automated harness: **12/12 passed** on Max's machine (Windows 11 25H2), 2026-10-02. Still to do:
-Part B of M1.md (real keys, Ctrl+Alt+Del, elevated window, sleep, Sticky Keys, On-Screen Keyboard).
+Automated harness: **12/12 passed** on Max's machine (Windows 11 25H2), 2026-10-02. Part B results
+(2026-10-02, recorded in M1.md): Win+L, Ctrl+Alt+Del, elevated window, sleep and On-Screen Keyboard
+behave as documented; Win+G and Fn/brightness get through and are documented as unblockable; Sticky
+Keys not tested.
+
+**Focus bug found and fixed in code:** with KeyClean's own window focused, Windows sometimes skipped
+the hook (Win opened Start, Ctrl+Alt+K needed several tries). The engine now runs in its own process
+(ADR 0009, `docs/research/webview-focus-hook.md`). Still to do: run the harness again (S1-S14 must
+pass, S14 is the focus check), then focus checks F1/F3 with real keys and a Win+G re-check.
 
 Scope: `keyclean-core` (session state machine, policy, chord, key tracking, fake clock - all
 unit-tested); `keyclean-win` engine thread with `WH_KEYBOARD_LL` hook, hidden notification window,
-watchdog, system-transition unlocks, keyboard enumeration; `lock_smoke` example; bare Tauri shell (Lock
+watchdog, system-transition unlocks, keyboard enumeration, run by the app as a separate engine process
+(ADR 0009); `lock_smoke` example; bare Tauri shell (Lock
 button, status line, DEV CAP badge, keyboard list); end-to-end harness `keyclean-e2e` with the
 `testkit` feature. Hard deadline, watchdog and debug dev cap are part of
 M1 so no build can lock indefinitely.
@@ -78,7 +86,7 @@ Acceptance (§62 and §60 "Input"):
 - [ ] Press a button → keyboard input stops → Ctrl+Alt+K → keyboard works again immediately
 - [ ] Keyboard can be locked
 - [ ] Keyboard can be unlocked
-- [ ] Emergency shortcut still works
+- [ ] Emergency shortcut still works, also with KeyClean's own window focused (S14, F1/F3)
 - [ ] Input returns to normal after unlock (no stuck keys)
 - [ ] Safety timeout works (dev cap releases without the chord)
 - [ ] Forced app termination tested (M1.md step 8)

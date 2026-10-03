@@ -18,4 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic unlock on system transitions: sleep, shutdown, restart, logoff, workstation lock and session switch.
 - Keyboard list (name and id only) from Raw Input.
 - Bare Tauri shell with a Lock button, status line and keyboard list.
-- Documentation: Phase 0 research notes, fail-safe matrix, ADRs 0001-0007, roadmap, and the M1 manual test.
+- Documentation: Phase 0 research notes, fail-safe matrix, ADRs 0001-0009, roadmap, and the M1 manual test.
+- Separate engine process: the app runs the lock engine as `keyclean.exe --engine` with no WebView and talks to it over stdin/stdout (session events only). The engine process exits with the app (ADR 0009).
+- Harness check S14 (Ctrl+Alt+K with the app's own window focused); S10 and S11 also check that no `keyclean.exe` is left behind.
+
+### Fixed
+
+- With KeyClean's own window focused, Windows could skip the keyboard hook during a lock, so Win opened the Start menu and Ctrl+Alt+K needed several tries. The hook now lives in a process without a WebView.

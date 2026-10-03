@@ -58,7 +58,8 @@ docs/  scripts/  assets/
 
 ## Engine model
 
-- One dedicated engine thread owns the hooks, Raw Input registration, a hidden top-level window for power/session/shutdown/device notifications (message-only windows miss broadcasts), and its own message loop.
+- The engine runs in its own process (ADR 0009): the app starts `keyclean.exe --engine --parent <pid>` (no WebView, because a focused WebView2 window in the hook's own process makes Windows skip the hook) and talks to it over line-delimited JSON on stdin/stdout, session events only. It exits when the app does (stdin EOF, or the parent watcher).
+- Inside it, one dedicated engine thread owns the hooks, Raw Input registration, a hidden top-level window for power/session/shutdown/device notifications (message-only windows miss broadcasts), and its own message loop.
 - Hook callbacks read shared state through atomics only. Commands enter the engine thread as posted messages; events leave through a channel.
 - A separate watchdog thread enforces the hard deadline.
 - Never set debugger breakpoints inside hook callbacks — pausing there stalls input system-wide.
