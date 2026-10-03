@@ -5,8 +5,13 @@
 //! injected input during a lock, ADR 0007).
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-    KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
+    VIRTUAL_KEY,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 /// `dwExtraInfo` value on every event this module sends ("KCLN").
@@ -123,6 +128,50 @@ pub fn send(strokes: &[Stroke]) -> Result<(), InjectError> {
         .collect();
     // SAFETY: `inputs` is a valid slice of fully initialized INPUT structs and `cbsize` is the
     // size of one INPUT, as SendInput requires.
+    let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) } as usize;
+    if inserted == inputs.len() {
+        Ok(())
+    } else {
+        Err(InjectError {
+            requested: inputs.len(),
+            inserted,
+        })
+    }
+}
+
+/// Left-clicks at screen position (`x`, `y`) in physical pixels, as a person would to focus a
+/// window. Call [`super::system::make_dpi_aware`] first so window and screen coordinates match.
+pub fn click(x: i32, y: i32) -> Result<(), InjectError> {
+    // SAFETY: GetSystemMetrics has no preconditions.
+    let (vx, vy, vw, vh) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2),
+        )
+    };
+    // Absolute coordinates are normalized to 0..=65535 across the virtual desktop.
+    let nx = (i64::from(x - vx) * 65535 / i64::from(vw - 1)) as i32;
+    let ny = (i64::from(y - vy) * 65535 / i64::from(vh - 1)) as i32;
+    let base = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE;
+    let inputs: Vec<INPUT> = [base, base | MOUSEEVENTF_LEFTDOWN, base | MOUSEEVENTF_LEFTUP]
+        .into_iter()
+        .map(|flags| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: nx,
+                    dy: ny,
+                    mouseData: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: TAG,
+                },
+            },
+        })
+        .collect();
+    // SAFETY: `inputs` holds fully initialized INPUT structs; `cbsize` is the size of one.
     let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) } as usize;
     if inserted == inputs.len() {
         Ok(())

@@ -529,6 +529,40 @@ fn describe(d: Option<Duration>, missing: &str) -> String {
     })
 }
 
+/// How long the engine process (ADR 0009) may outlive the app.
+const ENGINE_EXIT_WAIT: Duration = Duration::from_secs(5);
+
+/// Counts running `keyclean.exe` processes (the app and its engine process). Uses `tasklist` in
+/// CSV form and matches the image name, not its localized "no tasks" message.
+fn keyclean_processes() -> Result<usize, String> {
+    let out = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq keyclean.exe", "/FO", "CSV", "/NH"])
+        .output()
+        .map_err(|e| format!("couldn't run tasklist: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().starts_with("\"keyclean.exe\""))
+        .count())
+}
+
+/// Waits until no `keyclean.exe` is left; returns how long that took.
+fn expect_no_keyclean_left() -> Result<Duration, String> {
+    let started = Instant::now();
+    let mut last = Ok(0);
+    if wait_until(ENGINE_EXIT_WAIT, || {
+        last = keyclean_processes();
+        matches!(last, Ok(0))
+    }) {
+        return Ok(started.elapsed());
+    }
+    let count = last?;
+    Err(format!(
+        "{count} keyclean.exe process(es) still running {} s after the app exited; the engine \
+         process must exit with the app (a KeyClean started outside the harness also counts)",
+        ENGINE_EXIT_WAIT.as_secs()
+    ))
+}
+
 fn kill_app(ctx: &mut Ctx<'_>) -> Outcome {
     let exe = match app_exe() {
         Ok(exe) => exe,
@@ -541,9 +575,14 @@ fn kill_app(ctx: &mut Ctx<'_>) -> Outcome {
         if !wait_exit(&mut app.0, Duration::from_secs(5)) {
             return Err("the app didn't exit after kill".into());
         }
+        // The hook lives in the engine process, which exits once it sees the app is gone.
+        let engine_gone = expect_no_keyclean_left()?;
         expect_probes_pass(ctx.observer)?;
         expect_no_stuck_keys()?;
-        Ok("input back right after the kill".into())
+        Ok(format!(
+            "engine process gone {} ms after the app; input back right after",
+            engine_gone.as_millis()
+        ))
     };
     let result = run();
     crate::harness::release_watched_keys();
@@ -594,6 +633,11 @@ fn close_app(ctx: &mut Ctx<'_>) -> Outcome {
         if input_back.is_none() || exited.is_none() {
             return Err(detail);
         }
+        let engine_gone = expect_no_keyclean_left().map_err(|e| format!("{detail}; {e}"))?;
+        let detail = format!(
+            "{detail}; no keyclean.exe left {} ms after exit",
+            engine_gone.as_millis()
+        );
         // The app logs why the session ended; the close must be what ended it, not the timer.
         let log = target_dir()
             .map(|d| d.join("e2e-S11-app.log"))
@@ -640,6 +684,84 @@ fn second_instance(_ctx: &mut Ctx<'_>) -> Outcome {
         Ok("second instance exited; first kept running, then closed cleanly".into())
     };
     let result = run();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S14: Ctrl+Alt+K must end a lock while the app's own window has focus.
+///
+/// Windows stops calling a low-level hook while a WebView2 window of the hook's own process has
+/// focus (Max's manual tests F1/F3, X1). Runs without the observer hook, because a second hook was
+/// reported to mask the problem; the app log tells how the session ended.
+pub fn focused_app_chord() -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app(&exe, Some(15), "S14")?;
+        let pid = app.0.id();
+        // The autolock engages as the engine starts, before the window appears.
+        if wait_responsive(pid, Duration::from_secs(20)).is_none() {
+            return Err("the app window didn't appear".into());
+        }
+        sleep(Duration::from_secs(1));
+        let rect = system::window_rect(pid, APP_WINDOW_CLASS).ok_or("app window not found")?;
+        // An empty spot near the bottom of the window, below the keyboard list.
+        let (x, y) = ((rect.left + rect.right) / 2, rect.bottom - 30);
+        keyclean_win::testkit::inject::click(x, y).map_err(|e| format!("click failed: {e}"))?;
+        sleep(Duration::from_millis(500));
+        let log_path = target_dir().map(|d| d.join("e2e-S14-app.log"));
+        let read_log = || {
+            log_path
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .unwrap_or_default()
+        };
+        let ended_line = |log: &str| {
+            log.lines()
+                .find(|l| l.contains("session ended:"))
+                .map_or("no session end logged".to_string(), str::to_string)
+        };
+        let outcome = (|| {
+            // Without these two, a pass wouldn't prove anything about the focused-window case.
+            if system::foreground_pid() != Some(pid) {
+                return Err(
+                    "the click didn't give the app window focus, so the focus case wasn't tested"
+                        .to_string(),
+                );
+            }
+            let before = read_log();
+            if before.contains("session ended:") {
+                return Err(format!(
+                    "the autolock ended before the chord was sent ({}); app too slow",
+                    ended_line(&before)
+                ));
+            }
+            let pressed = Instant::now();
+            send(&chord_strokes(&CHORD))?;
+            wait_until(Duration::from_secs(3), || {
+                read_log().contains("session ended:")
+            });
+            let log = read_log();
+            if log.contains("session ended: Emergency") {
+                Ok(format!(
+                    "Ctrl+Alt+K ended the lock {} ms after it was pressed, with the app window                      focused",
+                    pressed.elapsed().as_millis()
+                ))
+            } else {
+                Err(format!(
+                    "Ctrl+Alt+K didn't end the lock while the app window had focus (the hook went                      deaf; within 3 s: {}); log: e2e-S14-app.log",
+                    ended_line(&log)
+                ))
+            }
+        })();
+        system::request_close(pid, APP_WINDOW_CLASS);
+        let _ = wait_exit(&mut app.0, Duration::from_secs(20));
+        outcome
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
     sleep(WEBVIEW_SETTLE);
     result.into()
 }

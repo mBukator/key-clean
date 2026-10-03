@@ -140,6 +140,7 @@ fn run(options: &Options) -> i32 {
     }
 
     let _watchdog = OutsideWatchdog::arm();
+    keyclean_win::testkit::system::make_dpi_aware();
     let started = Instant::now();
     let mut report = Report::new();
 
@@ -184,9 +185,14 @@ fn run(options: &Options) -> i32 {
         scenarios.push(scenarios::session_lock_scenario());
     }
 
+    let run_s14 = !options.skip_app
+        && options
+            .only
+            .as_ref()
+            .is_none_or(|only| only.iter().any(|id| id == "S14"));
     if let Some(only) = &options.only {
         for id in only {
-            if !scenarios.iter().any(|s| s.id == id.as_str()) {
+            if id != "S14" && !scenarios.iter().any(|s| s.id == id.as_str()) {
                 let hint = if id == "S13" {
                     " (S13 also needs --session-lock)"
                 } else if options.skip_app && ["S10", "S11", "S12"].contains(&id.as_str()) {
@@ -198,7 +204,7 @@ fn run(options: &Options) -> i32 {
             }
         }
         scenarios.retain(|s| only.iter().any(|id| id == s.id));
-        if scenarios.is_empty() {
+        if scenarios.is_empty() && !run_s14 {
             eprintln!("--only matched no checks");
             return EXIT_SETUP;
         }
@@ -228,6 +234,26 @@ fn run(options: &Options) -> i32 {
 
     drop(rig);
     drop(observer);
+
+    // S14 runs last and without the observer hook, which could mask the bug it looks for.
+    if run_s14 {
+        print!("S14 Ctrl+Alt+K works while the app window has focus ... ");
+        let outcome = scenarios::focused_app_chord();
+        println!(
+            "{}",
+            match &outcome {
+                Outcome::Pass(_) => "PASS",
+                Outcome::Fail(_) => "FAIL",
+                Outcome::Skip(_) => "SKIP",
+            }
+        );
+        report.add(
+            "S14",
+            "F3 (focus)",
+            "Ctrl+Alt+K works while the app window has focus",
+            outcome,
+        );
+    }
 
     report.print(started.elapsed());
     if let Some(path) = report.write_next_to_exe(started.elapsed()) {

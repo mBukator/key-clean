@@ -1,10 +1,14 @@
 //! Process-window and workstation helpers for the harness.
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::System::Shutdown::LockWorkStation;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SC_CLOSE,
-    SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NULL, WM_SYSCOMMAND,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+    IsWindowVisible, PostMessageW, SC_CLOSE, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NULL,
+    WM_SYSCOMMAND,
 };
 use windows::core::BOOL;
 
@@ -104,6 +108,55 @@ pub fn request_close(pid: u32, class: &str) -> usize {
         };
     }
     targets.len()
+}
+
+/// Makes this process per-monitor DPI aware, so window positions and mouse coordinates are both
+/// in physical pixels. Returns false if Windows refused (e.g. awareness was already set).
+pub fn make_dpi_aware() -> bool {
+    // SAFETY: no preconditions; fails harmlessly if the awareness is already set.
+    unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }.is_ok()
+}
+
+/// Screen rectangle of a window, in physical pixels (after [`make_dpi_aware`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// Left edge.
+    pub left: i32,
+    /// Top edge.
+    pub top: i32,
+    /// Right edge.
+    pub right: i32,
+    /// Bottom edge.
+    pub bottom: i32,
+}
+
+/// The rectangle of the first visible top-level window of process `pid` with class `class`.
+pub fn window_rect(pid: u32, class: &str) -> Option<Rect> {
+    let hwnd = visible_windows(pid)
+        .into_iter()
+        .find(|&hwnd| window_info(hwnd).class == class)?;
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is writable; a window that just closed makes the call fail harmlessly.
+    unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut rect) }.ok()?;
+    Some(Rect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    })
+}
+
+/// The process that owns the foreground window, if there is one.
+pub fn foreground_pid() -> Option<u32> {
+    // SAFETY: no preconditions; returns a null handle if no window is in the foreground.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is writable; a window that just closed makes the call return 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (pid != 0).then_some(pid)
 }
 
 /// Locks the workstation, as Win+L does. The user has to sign back in.
