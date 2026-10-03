@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | not started                                 |
-| M3 Safety hardening                            | §53 Phase 2 | not started                                 |
-| M4 Device detection                            | §52 Phase 1 | not started                                 |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                           |
+| ---------------------------------------------- | ----------- | ------------------------------------------------ |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **code-complete - awaiting manual verification** |
+| M3 Safety hardening                            | §53 Phase 2 | not started                                      |
+| M4 Device detection                            | §52 Phase 1 | not started                                      |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
+| M8 System tray                                 | §55 Phase 4 | not started                                      |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
+| M11 Packaging                                  | §55 Phase 4 | not started                                      |
+| M12 Open-source release                        | §56 Phase 5 | not started                                      |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
 
 ---
 
@@ -101,7 +101,16 @@ Acceptance (§62 and §60 "Input"):
 
 ### M2 - Timer and automatic unlock
 
-Status: not started. Manual test: `docs/testing/manual/M2.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S15 countdown through the engine process, S16 hard deadline with the session timer switched off, plus
+the M1 checks) and Parts B and C of `docs/testing/manual/M2.md`, including real durations in a release
+build.
+
+Done in code: presets 30 s / 1 min / 2 min / 5 min (default 2 min) in `keyclean-core::presets`, the
+app rejects any other duration; the engine emits a status each time the displayed second changes
+(`TIMER_COUNTDOWN`, rounding in `keyclean-core::countdown`), never at idle or while draining; **Unlock
+now** button (`UserRequest`); "Cleaning complete" after a `Timeout`. The max-lock setting stays at its
+30 min default until settings land (M7).
 
 Scope: duration presets (§11), countdown events from the engine, accurate monotonic session timer
 (QPC), automatic unlock (§16), "unlock now" request from the UI. Release builds allow real durations up
@@ -319,5 +328,7 @@ Not planned. Only after the core product is stable, and only if it passes §65.
   unlocking types nothing (the drain stays while blocked keys repeat, up to 30 s and never past the hard deadline).
 - **E2E on CI:** `.github/workflows/e2e.yml` (manual trigger) checks whether hosted Windows runners can
   run the harness. If they can, consider running it on PRs.
-- **Repo setup (Max):** push `main` and `develop` once, then enable branch protection for both in GitHub
-  settings. Claude doesn't change repo settings.
+- **Repo setup:** done 2026-10-03. `main` and `develop` are protected like Max's other repos: PRs
+  only, one code-owner review (`.github/CODEOWNERS`), checks `checks` and `pr-title` up to date,
+  linear history, resolved conversations, no force-push or deletion, admins may bypass. Squash merge
+  only; branches are deleted after merge. Claude changes repo settings only when Max asks.
