@@ -110,7 +110,7 @@ bun run lint
 bun run format               # / format:check
 bunx merlin                  # interactive commit wizard
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock
-cargo run -p keyclean-e2e    # Max only — automated M1 checks (~2 min, locks repeatedly)
+cargo run -p keyclean-e2e    # Max only — automated M1-M3 checks (~4 min, locks repeatedly; --stall adds S20)
 ```
 
 If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).

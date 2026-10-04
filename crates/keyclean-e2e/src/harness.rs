@@ -4,9 +4,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use keyclean_win::keyclean_core::policy::DEV_MAX_HARD_DEADLINE;
-use keyclean_win::testkit::held;
 use keyclean_win::testkit::inject::{self, Stroke, vk};
 use keyclean_win::testkit::observer::Observer;
+use keyclean_win::testkit::{held, system};
 use keyclean_win::{EndReason, Engine, EngineEvent, EngineNotice, LockRequest, SessionState};
 
 /// How long to wait for an injected event to reach (or not reach) the observer.
@@ -118,6 +118,9 @@ pub struct Ended {
     pub reason: EndReason,
     pub after: Duration,
     pub notices: Vec<EngineNotice>,
+    /// Message keys of the engine errors reported before the end (only collected by
+    /// [`EngineRig::wait_ended_with_errors`]).
+    pub errors: Vec<String>,
 }
 
 /// A lock request for `duration` whose hard deadline stays within the development caps.
@@ -207,10 +210,30 @@ impl EngineRig {
         Ok(())
     }
 
-    /// Waits for the session to end, collecting notices on the way.
+    /// Waits for the session to end, collecting notices on the way. An engine error fails it.
     pub fn wait_ended(&mut self, since: Instant, timeout: Duration) -> Result<Ended, String> {
+        self.wait_ended_inner(since, timeout, false)
+    }
+
+    /// Like [`wait_ended`](Self::wait_ended), but engine errors are expected and collected, for
+    /// scenarios where a failure is what ends the session.
+    pub fn wait_ended_with_errors(
+        &mut self,
+        since: Instant,
+        timeout: Duration,
+    ) -> Result<Ended, String> {
+        self.wait_ended_inner(since, timeout, true)
+    }
+
+    fn wait_ended_inner(
+        &mut self,
+        since: Instant,
+        timeout: Duration,
+        collect_errors: bool,
+    ) -> Result<Ended, String> {
         let until = Instant::now() + timeout;
         let mut notices = Vec::new();
+        let mut errors = Vec::new();
         loop {
             let left = until.saturating_duration_since(Instant::now());
             match self.events.recv_timeout(left) {
@@ -222,9 +245,13 @@ impl EngineRig {
                         reason,
                         after,
                         notices,
+                        errors,
                     });
                 }
                 Ok(EngineEvent::Notice(n)) => notices.push(n),
+                Ok(EngineEvent::Error(e)) if collect_errors => {
+                    errors.push(e.message_key().to_owned());
+                }
                 Ok(EngineEvent::Error(e)) => return Err(format!("engine error: {}", e.details())),
                 Ok(event) => self.note(&event),
                 Err(RecvTimeoutError::Timeout) => {
@@ -246,6 +273,18 @@ impl EngineRig {
             );
         }
         release_watched_keys();
+    }
+}
+
+/// Fails unless the process has no Raw Input registration: the engine registers only during a
+/// session (invariant 4).
+pub fn expect_no_raw_input_registration() -> Result<(), String> {
+    match system::registered_raw_input_count() {
+        Some(0) => Ok(()),
+        Some(n) => Err(format!(
+            "{n} Raw Input registration(s) left while idle (invariant 4)"
+        )),
+        None => Err("GetRegisteredRawInputDevices failed".into()),
     }
 }
 

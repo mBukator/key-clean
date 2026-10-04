@@ -7,7 +7,9 @@
 pub mod chord;
 pub mod countdown;
 pub mod keystate;
+pub mod liveness;
 pub mod policy;
 pub mod presets;
+pub mod restart;
 pub mod session;
 pub mod time;

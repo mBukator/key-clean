@@ -18,7 +18,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
 | M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
 | M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | not started                                 |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
 | M4 Device detection                            | §52 Phase 1 | not started                                 |
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
 | M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
@@ -136,7 +136,48 @@ Acceptance (§60 "Timer"):
 
 ### M3 - Safety hardening
 
-Status: not started. Manual test: `docs/testing/manual/M3.md`.
+Status: **done** (verified by Max, 2026-10-04). Verification: `cargo run -p keyclean-e2e`
+(S17-S24, plus `--stall` for S20 and `--raw-diag` for S25) and Parts B and C of
+`docs/testing/manual/M3.md`.
+
+Harness, 2026-10-04: **22/22 passed**, plus S20 and S25 run once each. The first run found two bugs:
+
+- **S19:** the watchdog's `abort()` went through Windows Error Reporting, which kept a hung engine,
+  and its hook, about 5 s longer. It now uses `TerminateProcess`.
+- **S17:** S6's synthesized Win+G opened the Xbox Game Bar. While its overlay is open, Windows
+  delivers no Raw Input, so the lost-hook check is blind. Win+G left S6, and the limitation is
+  documented in ADR 0010.
+
+Manual Parts B and C, 2026-10-04: all passed except the skipped optional steps (3, sign-out and
+session disconnect; 10, drift under load).
+
+- **Shutdown and restart:** neither was delayed, and KeyClean was idle afterwards.
+- **Sleep** (S3 standby): ended as "the computer was locked".
+- **Others that passed:** the clock jump of ±1 h, keyboard unplug and replug, killing the engine,
+  `taskkill` without `/F`, and the physical Win+G.
+- **Admin window (step 7):** typing into an elevated window was **blocked**. In M1 it got through,
+  before the engine moved to its own process.
+
+Done in code:
+
+- **Lost-hook check (ADR 0010).** During a session only, a Raw Input sink on the engine window
+  (`RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`) is compared with the hook's last-callback time. A lost hook
+  ends the lock with `error.hook_lost`.
+  Known limitation: while the Xbox Game Bar overlay is open (Win+G can't be blocked), Windows
+  delivers no raw input, so the check is blind; the lock itself keeps working (harness S25).
+- **Admin windows.** When an elevated window has focus, the lock stays on with a warning (Max's
+  decision, 2026-10-04).
+- **Keyboard notices.** Connecting or disconnecting a keyboard during a lock shows a notice and
+  re-lists keyboards. The lock continues (ADR 0004).
+- **Engine restart (ADR 0011).** A dead engine process is restarted idle, at most 3 times in 5
+  minutes.
+- **Clean `taskkill`.** `taskkill` without `/F` now exits the app cleanly: tao's and the
+  single-instance plugin's helper windows are subclassed so `WM_CLOSE` means "exit".
+- **Fault injection.** Testkit faults for a lost hook, a failed install, a hung engine thread and a
+  real hook timeout.
+- **Verification only.** Shutdown, restart, sign-out, switch user, sleep, clock changes and drift
+  needed no new code. Each has a manual step.
+- **Research.** `docs/research/m3-safety.md`.
 
 Scope: silent hook removal detection (Raw Input sink compared with the hook's last callback, Max's
 decision to defer from M1); sleep/wake, shutdown, restart and session switch tested end to end; device
@@ -147,14 +188,14 @@ instead.
 
 Acceptance (§60 "Safety"):
 
-- [ ] Forced app termination tested
-- [ ] Sleep/wake tested
-- [ ] Shutdown tested
-- [ ] Restart tested
-- [ ] Device disconnect tested
-- [ ] Device reconnect tested
-- [ ] Silent hook removal is detected and reported (input released, user told)
-- [ ] Clock change does not change the lock length
+- [x] Forced app termination tested
+- [x] Sleep/wake tested
+- [x] Shutdown tested
+- [x] Restart tested
+- [x] Device disconnect tested
+- [x] Device reconnect tested
+- [x] Silent hook removal is detected and reported (input released, user told)
+- [x] Clock change does not change the lock length
 
 ## Phase 1 (continued) - devices and pointing input (§52, §22-§24)
 
@@ -169,6 +210,9 @@ every keyboard is locked.
 Acceptance:
 
 - [ ] Connected devices are listed with friendly names
+      (note: M3's device notifications only exist during a lock, because Raw Input is registered
+      only then; a live list at idle needs a mechanism that registers for no input, e.g.
+      `CM_Register_Notification` for the keyboard interface class)
 - [ ] Plugging and unplugging updates the list without restarting
 - [ ] Each device shows Supported / Limited / Unsupported
 - [ ] Idle KeyClean still registers for no input (invariant 4)

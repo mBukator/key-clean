@@ -46,6 +46,13 @@ static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// QPC ticks of the last event blocked while draining (a blocked key still auto-repeating or
 /// being released). The engine extends the drain while this keeps moving.
 static LAST_DRAIN_BLOCK_TICKS: AtomicU64 = AtomicU64::new(0);
+/// QPC ticks of the last `HC_ACTION` call of this session (0 = none yet). The engine compares it
+/// with keyboard Raw Input to notice a hook Windows removed or skipped (hook-liveness check).
+static LAST_CALLBACK_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Testkit only: milliseconds the next callback sleeps, to provoke a real `LowLevelHooksTimeout`.
+#[cfg(feature = "testkit")]
+pub(crate) static STALL_NEXT_CALLBACK_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 #[derive(Clone, Copy)]
 struct HookLocal {
@@ -72,6 +79,15 @@ thread_local! {
 /// Called by Windows only, with the arguments documented for `LowLevelKeyboardProc`.
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 && lparam.0 != 0 {
+        LAST_CALLBACK_TICKS.store(qpc::ticks(), Ordering::Release);
+        // Testkit only, never compiled into the app: a deliberately slow callback.
+        #[cfg(feature = "testkit")]
+        {
+            let stall = STALL_NEXT_CALLBACK_MS.swap(0, Ordering::AcqRel);
+            if stall != 0 {
+                std::thread::sleep(std::time::Duration::from_millis(u64::from(stall)));
+            }
+        }
         // SAFETY: for WH_KEYBOARD_LL with HC_ACTION, `lparam` points to a KBDLLHOOKSTRUCT that is
         // valid for the duration of this call (LowLevelKeyboardProc docs). We copy the fields out.
         let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
@@ -182,6 +198,7 @@ pub(crate) fn begin_arming(generation: u64, hard_deadline_ticks: u64) {
     HARD_DEADLINE_TICKS.store(hard_deadline_ticks, Ordering::Release);
     END_POSTED.store(false, Ordering::Release);
     DRAIN_POSTED.store(false, Ordering::Release);
+    LAST_CALLBACK_TICKS.store(0, Ordering::Release);
     PHASE.store(Phase::Arming as u8, Ordering::Release);
 }
 
@@ -269,6 +286,14 @@ pub(crate) fn last_drain_block_ticks() -> u64 {
     LAST_DRAIN_BLOCK_TICKS.load(Ordering::Acquire)
 }
 
+/// QPC ticks of the last hook call this session, or `None` if the hook hasn't been called.
+pub(crate) fn last_callback_ticks() -> Option<u64> {
+    match LAST_CALLBACK_TICKS.load(Ordering::Acquire) {
+        0 => None,
+        t => Some(t),
+    }
+}
+
 /// Whether every blocked press has been released. Engine thread only.
 pub(crate) fn drained() -> bool {
     LOCAL
@@ -293,5 +318,6 @@ pub(crate) fn uninstall(hook: HHOOK) -> windows::core::Result<()> {
 pub(crate) fn clear() {
     PHASE.store(PHASE_IDLE, Ordering::Release);
     HARD_DEADLINE_TICKS.store(u64::MAX, Ordering::Release);
+    LAST_CALLBACK_TICKS.store(0, Ordering::Release);
     let _ = LOCAL.try_with(|cell| cell.set(HookLocal::new()));
 }

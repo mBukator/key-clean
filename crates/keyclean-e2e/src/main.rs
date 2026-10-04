@@ -1,4 +1,4 @@
-//! Automated end-to-end checks for KeyClean's Milestone 1 (ADR 0008).
+//! Automated end-to-end checks for KeyClean's milestones M1-M3 (ADR 0008).
 //!
 //! **This engages real keyboard locks.** Run it by hand only, never from `cargo test` or by an
 //! agent. Each lock is clamped to the development caps (15 s, 20 s hard deadline), the real
@@ -7,7 +7,7 @@
 //! ```text
 //! cargo build -p keyclean-win --example lock_smoke
 //! bun run build && cargo build -p keyclean
-//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock]
+//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall]
 //! ```
 //!
 //! Exit codes: 0 all passed, 1 a check failed, 2 the environment check failed (injected keys don't
@@ -46,6 +46,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 struct Options {
     skip_app: bool,
     session_lock: bool,
+    stall: bool,
+    raw_diag: bool,
     only: Option<Vec<String>>,
 }
 
@@ -54,6 +56,8 @@ impl Options {
         let mut options = Options {
             skip_app: false,
             session_lock: false,
+            stall: false,
+            raw_diag: false,
             only: None,
         };
         let mut args = std::env::args().skip(1);
@@ -69,6 +73,8 @@ impl Options {
                 }
                 "--skip-app" => options.skip_app = true,
                 "--session-lock" => options.session_lock = true,
+                "--stall" => options.stall = true,
+                "--raw-diag" => options.raw_diag = true,
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown option {other}\n\n{USAGE}")),
             }
@@ -78,10 +84,12 @@ impl Options {
 }
 
 const USAGE: &str =
-    "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--only S2,S11]
+    "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--only S2,S11]
   --only IDS      run only these checks (comma-separated IDs from the report)
   --skip-app      skip the scenarios that start the app (target/debug/keyclean.exe)
-  --session-lock  also lock the workstation (you'll have to sign back in); runs last";
+  --session-lock  also lock the workstation (you'll have to sign back in); runs last
+  --stall         also stall the hook past Windows' timeout (S20; input lags up to 1 s once)
+  --raw-diag      also run S25: the lost-hook check after each system shortcut (opens Game Bar)";
 
 /// Kills this process after `RUN_LIMIT`, from outside, in case the harness hangs. Disarmed on
 /// drop.
@@ -118,6 +126,10 @@ impl Drop for OutsideWatchdog {
 }
 
 fn main() {
+    // Child process of S19 (a hung engine thread); the watchdog is expected to end it.
+    if std::env::args().nth(1).as_deref() == Some(scenarios::CHILD_HANG_FLAG) {
+        std::process::exit(scenarios::child_hang());
+    }
     let options = match Options::parse() {
         Ok(o) => o,
         Err(msg) => {
@@ -129,8 +141,8 @@ fn main() {
 }
 
 fn run(options: &Options) -> i32 {
-    println!("KeyClean end-to-end checks (M1, M2)");
-    println!("This locks your keyboard several times over about 2.5 minutes (6 minutes at most).");
+    println!("KeyClean end-to-end checks (M1-M3)");
+    println!("This locks your keyboard several times over about 4 minutes (6 minutes at most).");
     println!("  - Hands off the keyboard until it finishes. The mouse is never locked.");
     println!("  - Click into an empty Notepad window now (anything that leaks lands there).");
     println!("  - The real Ctrl+Alt+K always unlocks. Ctrl+C now to cancel.");
@@ -180,11 +192,23 @@ fn run(options: &Options) -> i32 {
     };
 
     let mut scenarios = scenarios::engine_scenarios();
+    if options.stall {
+        // Before S22, so its Raw Input cleanup is checked too.
+        let at = scenarios
+            .iter()
+            .position(|s| s.id == "S22")
+            .unwrap_or(scenarios.len());
+        scenarios.insert(at, scenarios::hook_timeout_scenario());
+    }
     scenarios.extend(scenarios::process_scenarios(options.skip_app));
     if options.session_lock {
         scenarios.push(scenarios::session_lock_scenario());
     }
 
+    let run_s24 = options
+        .only
+        .as_ref()
+        .is_none_or(|only| only.iter().any(|id| id == "S24"));
     let run_s14 = !options.skip_app
         && options
             .only
@@ -192,10 +216,16 @@ fn run(options: &Options) -> i32 {
             .is_none_or(|only| only.iter().any(|id| id == "S14"));
     if let Some(only) = &options.only {
         for id in only {
-            if id != "S14" && !scenarios.iter().any(|s| s.id == id.as_str()) {
+            if !["S14", "S24", "S25"].contains(&id.as_str())
+                && !scenarios.iter().any(|s| s.id == id.as_str())
+            {
                 let hint = if id == "S13" {
                     " (S13 also needs --session-lock)"
-                } else if options.skip_app && ["S10", "S11", "S12", "S15"].contains(&id.as_str()) {
+                } else if id == "S20" {
+                    " (S20 also needs --stall)"
+                } else if options.skip_app
+                    && ["S10", "S11", "S12", "S15", "S21", "S23"].contains(&id.as_str())
+                {
                     " (app checks are off with --skip-app)"
                 } else {
                     ""
@@ -204,7 +234,7 @@ fn run(options: &Options) -> i32 {
             }
         }
         scenarios.retain(|s| only.iter().any(|id| id == s.id));
-        if scenarios.is_empty() && !run_s14 {
+        if scenarios.is_empty() && !run_s14 && !run_s24 && !options.raw_diag {
             eprintln!("--only matched no checks");
             return EXIT_SETUP;
         }
@@ -234,6 +264,45 @@ fn run(options: &Options) -> i32 {
 
     drop(rig);
     drop(observer);
+
+    // S24 repeats S17 without the observer hook, as in the real engine process.
+    if run_s24 {
+        print!("S24 A removed hook is detected with no other hook in the process ... ");
+        let outcome = scenarios::hook_lost_without_observer();
+        println!(
+            "{}",
+            match &outcome {
+                Outcome::Pass(_) => "PASS",
+                Outcome::Fail(_) => "FAIL",
+                Outcome::Skip(_) => "SKIP",
+            }
+        );
+        report.add(
+            "S24",
+            "M3 A",
+            "A removed hook is detected with no other hook in the process",
+            outcome,
+        );
+    }
+
+    if options.raw_diag {
+        print!("S25 Raw Input after each system shortcut (diagnostic) ... ");
+        let outcome = scenarios::raw_input_diagnostic();
+        println!(
+            "{}",
+            match &outcome {
+                Outcome::Pass(_) => "PASS",
+                Outcome::Fail(_) => "FAIL",
+                Outcome::Skip(_) => "SKIP",
+            }
+        );
+        report.add(
+            "S25",
+            "diagnostic",
+            "Raw Input after each system shortcut",
+            outcome,
+        );
+    }
 
     // S14 runs last and without the observer hook, which could mask the bug it looks for.
     if run_s14 {

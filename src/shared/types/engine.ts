@@ -27,6 +27,10 @@ export interface EngineStatus {
     engineAvailable: boolean;
     /** Whole seconds left in the lock, rounded up, while starting or locked; otherwise null. */
     countdownSecs: number | null;
+    /** Key into locales/en/strings.json for the latest notice, until the next lock starts. */
+    notice: string | null;
+    /** Counts keyboard connects and disconnects; a change means the keyboard list is stale. */
+    deviceChanges: number;
 }
 
 /** Mirrors `LockOptionsDto` in src-tauri/src/bridge.rs. */

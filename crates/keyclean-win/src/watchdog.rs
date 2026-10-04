@@ -4,9 +4,14 @@
 //! 1. switches the hook to `Passthrough`, so every event passes immediately, even if the engine
 //!    thread is busy;
 //! 2. posts `WM_WATCHDOG_EXPIRED` so the engine thread unhooks and ends the session;
-//! 3. if the engine hasn't disarmed it within [`ESCALATION_GRACE`], aborts the process. Windows
-//!    removes every hook of a process that exits, so input is released no matter what state the
-//!    engine is in.
+//! 3. if the engine hasn't disarmed it within [`ESCALATION_GRACE`], terminates the process with
+//!    `TerminateProcess` (exit code [`WATCHDOG_EXIT_CODE`]). Windows removes every hook of a
+//!    process that exits, so input is released no matter what state the engine is in.
+//!
+//! Not `std::process::abort()`: on Windows that is a fail-fast crash, and Windows Error Reporting
+//! may hold the dying process for several seconds while its hook stays installed (harness S19
+//! measured about 5 s) [assumption: WER is the cause]. `TerminateProcess` on the current process
+//! ends it without crash reporting; `abort()` remains the fallback if it fails.
 //!
 //! Deadlines are `Instant`s (QPC-backed). The thread sleeps on a condition variable; there is no
 //! polling.
@@ -18,8 +23,11 @@ use std::time::{Duration, Instant};
 use crate::hook;
 use crate::msg::WM_WATCHDOG_EXPIRED;
 
-/// How long the engine gets to release input after the watchdog fires before the process aborts.
+/// How long the engine gets to release input after the watchdog fires before the process ends.
 pub(crate) const ESCALATION_GRACE: Duration = Duration::from_secs(1);
+
+/// Exit code of a process the watchdog ended ("KC").
+pub const WATCHDOG_EXIT_CODE: u32 = 0x4B43;
 
 #[derive(Default)]
 struct State {
@@ -130,7 +138,7 @@ fn run(shared: &Shared) {
             if now >= give_up_at {
                 // The engine thread is unresponsive while a hook may still be installed. Process
                 // exit is the one release mechanism that cannot fail (Windows frees the hooks).
-                std::process::abort();
+                terminate_self();
             }
             state = shared
                 .1
@@ -139,4 +147,18 @@ fn run(shared: &Shared) {
                 .0;
         }
     }
+}
+
+/// Ends this process at once, without crash reporting. Windows then removes its hooks.
+fn terminate_self() -> ! {
+    // SAFETY: GetCurrentProcess returns a pseudo-handle for this process that needs no closing;
+    // TerminateProcess on it ends every thread of the process, including this one.
+    let _ = unsafe {
+        windows::Win32::System::Threading::TerminateProcess(
+            windows::Win32::System::Threading::GetCurrentProcess(),
+            WATCHDOG_EXIT_CODE,
+        )
+    };
+    // Only reached if TerminateProcess failed or hasn't taken effect yet.
+    std::process::abort()
 }

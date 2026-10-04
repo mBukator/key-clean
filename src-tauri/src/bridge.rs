@@ -2,7 +2,8 @@
 
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
-    EndReason, EngineError, EngineEvent, KeyboardDevice, SessionState, SystemTransition,
+    DeviceChange, EndReason, EngineError, EngineEvent, EngineNotice, KeyboardDevice, SessionState,
+    SystemTransition,
 };
 use serde::Serialize;
 
@@ -47,6 +48,10 @@ pub struct StatusDto {
     engine_available: bool,
     /// Whole seconds left in the lock, rounded up (§15), while starting or locked.
     countdown_secs: Option<u64>,
+    /// The latest notice to show (a string key), until the next lock starts.
+    notice: Option<&'static str>,
+    /// Counts keyboard connects and disconnects, so the window knows to list keyboards again.
+    device_changes: u64,
 }
 
 impl StatusDto {
@@ -59,6 +64,8 @@ impl StatusDto {
             error: None,
             engine_available: false,
             countdown_secs: None,
+            notice: None,
+            device_changes: 0,
         }
     }
 
@@ -68,13 +75,27 @@ impl StatusDto {
         self.error = error;
     }
 
-    /// Folds one engine event into the status. Notices don't change what is displayed.
+    /// Records that the engine process died and a new, idle one took its place.
+    pub fn set_engine_restarted(&mut self) {
+        self.set_engine(true, None);
+        self.state = state_name(SessionState::Idle);
+        self.countdown_secs = None;
+        self.notice = Some("notice.engine_restarted");
+    }
+
+    /// Folds one engine event into the status. Only notices the user should see are kept.
     pub fn apply(&mut self, event: &EngineEvent) {
         match event {
             EngineEvent::Status(status) => {
                 if status.state == SessionState::Starting {
                     self.error = None;
                     self.last_end_reason = None;
+                }
+                let was_idle = self.state == state_name(SessionState::Idle);
+                if was_idle && matches!(status.state, SessionState::Starting | SessionState::Locked)
+                {
+                    // A new lock starts: earlier notices no longer apply.
+                    self.notice = None;
                 }
                 self.state = state_name(status.state);
                 self.dev_cap = status.dev_cap;
@@ -89,7 +110,18 @@ impl StatusDto {
                 self.last_end_reason = Some(end_reason_name(*reason));
             }
             EngineEvent::Error(e) => self.error = Some(ErrorDto::from(e)),
-            EngineEvent::Notice(_) => {}
+            EngineEvent::Notice(notice) => {
+                if let Some(key) = notice_key(*notice) {
+                    self.notice = Some(key);
+                }
+            }
+            EngineEvent::DeviceChanged(change) => {
+                self.notice = Some(match change {
+                    DeviceChange::Arrived => "notice.keyboard_connected",
+                    DeviceChange::Removed => "notice.keyboard_disconnected",
+                });
+                self.device_changes = self.device_changes.wrapping_add(1);
+            }
         }
     }
 }
@@ -138,6 +170,19 @@ fn state_name(state: SessionState) -> &'static str {
         SessionState::Starting => "starting",
         SessionState::Locked => "locked",
         SessionState::Unlocking => "unlocking",
+    }
+}
+
+/// The string key for notices the user should see; the rest are only logged.
+fn notice_key(notice: EngineNotice) -> Option<&'static str> {
+    match notice {
+        EngineNotice::ElevatedWindowBypass => Some("notice.elevated_window"),
+        EngineNotice::LivenessCheckUnavailable => Some("notice.liveness_unavailable"),
+        EngineNotice::HookAlreadyRemoved
+        | EngineNotice::DrainTimedOut
+        | EngineNotice::PowerNotificationUnavailable
+        | EngineNotice::SessionNotificationUnavailable
+        | EngineNotice::RawInputNotRemoved => None,
     }
 }
 
@@ -288,6 +333,7 @@ mod tests {
             EngineError::Timer,
             EngineError::MessageLoop,
             EngineError::EngineProcess(String::new()),
+            EngineError::HookLost,
         ];
         for e in errors {
             assert!(
@@ -301,6 +347,94 @@ mod tests {
             "error.hook_install",
             "error.devices",
         ] {
+            assert!(strings.contains_key(key), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn notices_show_until_the_next_lock() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&EngineEvent::Notice(
+            EngineNotice::PowerNotificationUnavailable,
+        ));
+        assert_eq!(dto.notice, None, "log-only notices aren't shown");
+
+        dto.apply(&status(SessionState::Starting));
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::Notice(EngineNotice::ElevatedWindowBypass));
+        assert_eq!(dto.notice, Some("notice.elevated_window"));
+        dto.apply(&status(SessionState::Locked));
+        assert_eq!(
+            dto.notice,
+            Some("notice.elevated_window"),
+            "kept during the lock"
+        );
+        dto.apply(&EngineEvent::Notice(EngineNotice::LivenessCheckUnavailable));
+        assert_eq!(dto.notice, Some("notice.liveness_unavailable"));
+        dto.apply(&status(SessionState::Unlocking));
+        dto.apply(&status(SessionState::Idle));
+        assert_eq!(
+            dto.notice,
+            Some("notice.liveness_unavailable"),
+            "kept after the lock"
+        );
+
+        dto.apply(&status(SessionState::Starting));
+        assert_eq!(dto.notice, None, "a new lock clears it");
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(json["notice"].is_null());
+    }
+
+    #[test]
+    fn device_changes_set_a_notice_and_count() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed));
+        assert_eq!(dto.notice, Some("notice.keyboard_disconnected"));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived));
+        assert_eq!(dto.notice, Some("notice.keyboard_connected"));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["deviceChanges"], 2);
+        assert_eq!(json["notice"], "notice.keyboard_connected");
+    }
+
+    #[test]
+    fn a_restart_shows_an_idle_engine_and_a_notice() {
+        let mut dto = StatusDto::initial(true);
+        dto.set_engine(true, None);
+        dto.apply(&status_with(
+            SessionState::Locked,
+            Some(Duration::from_secs(5)),
+        ));
+        dto.apply(&EngineEvent::Error(EngineError::EngineProcess(
+            "gone".into(),
+        )));
+        dto.set_engine(false, Some(ErrorDto::from(&EngineError::NotRunning)));
+        dto.set_engine_restarted();
+        assert!(dto.engine_available);
+        assert!(dto.error.is_none());
+        assert_eq!(dto.state, "idle");
+        assert_eq!(dto.countdown_secs, None);
+        assert_eq!(dto.notice, Some("notice.engine_restarted"));
+    }
+
+    #[test]
+    fn every_notice_has_a_ui_string() {
+        let strings: std::collections::HashMap<String, String> =
+            serde_json::from_str(include_str!("../../locales/en/strings.json")).unwrap();
+        let mut keys: Vec<&str> = [
+            EngineNotice::ElevatedWindowBypass,
+            EngineNotice::LivenessCheckUnavailable,
+        ]
+        .into_iter()
+        .filter_map(notice_key)
+        .collect();
+        keys.extend([
+            "notice.keyboard_connected",
+            "notice.keyboard_disconnected",
+            "notice.engine_restarted",
+        ]);
+        for key in keys {
             assert!(strings.contains_key(key), "missing {key}");
         }
     }

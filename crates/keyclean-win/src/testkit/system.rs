@@ -1,10 +1,13 @@
 //! Process-window and workstation helpers for the harness.
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT, WPARAM,
+};
 use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::{GetRegisteredRawInputDevices, RAWINPUTDEVICE};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     IsWindowVisible, PostMessageW, SC_CLOSE, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NULL,
@@ -159,8 +162,40 @@ pub fn foreground_pid() -> Option<u32> {
     (pid != 0).then_some(pid)
 }
 
+/// The foreground window's class name and owning process id, for diagnostics.
+pub fn foreground_window() -> Option<(String, u32)> {
+    // SAFETY: no preconditions; returns a null handle if no window is in the foreground.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is writable; a window that just closed makes the call return 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    Some((window_info(hwnd.0 as isize).class, pid))
+}
+
 /// Locks the workstation, as Win+L does. The user has to sign back in.
 pub fn lock_workstation() -> windows::core::Result<()> {
     // SAFETY: no preconditions; returns an error if the workstation can't be locked.
     unsafe { LockWorkStation() }
+}
+
+/// How many Raw Input device classes the calling process has registered. Zero while the engine is
+/// idle (invariant 4). Returns `None` if Windows reports an error.
+pub fn registered_raw_input_count() -> Option<usize> {
+    let mut count = 0u32;
+    // SAFETY: a NULL buffer asks only for the number of registered devices, written to `count`.
+    let result = unsafe {
+        GetRegisteredRawInputDevices(
+            None,
+            &mut count,
+            std::mem::size_of::<RAWINPUTDEVICE>() as u32,
+        )
+    };
+    // SAFETY: GetLastError has no preconditions.
+    if result == u32::MAX && unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+    Some(count as usize)
 }

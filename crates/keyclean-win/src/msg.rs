@@ -20,3 +20,6 @@ pub(crate) const TIMER_DRAIN: usize = 2;
 /// `SetTimer` id for the countdown: fires when the displayed second changes. Display only; it
 /// never ends a session.
 pub(crate) const TIMER_COUNTDOWN: usize = 3;
+/// `SetTimer` id for the hook-liveness check: fires `LIVENESS_CHECK_DELAY` after a raw keyboard
+/// message, to confirm the hook saw the same key.
+pub(crate) const TIMER_HOOK_CHECK: usize = 4;
