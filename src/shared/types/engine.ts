@@ -29,8 +29,6 @@ export interface EngineStatus {
     countdownSecs: number | null;
     /** Key into locales/en/strings.json for the latest notice, until the next lock starts. */
     notice: string | null;
-    /** Counts keyboard connects and disconnects; a change means the keyboard list is stale. */
-    deviceChanges: number;
 }
 
 /** Mirrors `LockOptionsDto` in src-tauri/src/bridge.rs. */
@@ -41,10 +39,28 @@ export interface LockOptions {
     defaultSeconds: number;
 }
 
-export interface Keyboard {
+export type DeviceKind = "keyboard" | "mouse" | "touchpad" | "touchscreen" | "pen";
+
+/** How far KeyClean can control a device. */
+export type Capability = "supported" | "limited" | "unsupported";
+
+/** Mirrors `DeviceDto` in src-tauri/src/bridge.rs. */
+export interface Device {
     id: string;
     name: string | null;
+    kind: DeviceKind;
+    capability: Capability;
+}
+
+/** Mirrors `DevicesDto` in src-tauri/src/bridge.rs. */
+export interface DevicesState {
+    devices: Device[];
+    /** Set when listing failed (the old list is kept) or the list can't update by itself. */
+    error: ErrorInfo | null;
 }
 
 /** Name of the event the shell emits to the main window on every status change. */
 export const STATUS_EVENT = "engine-status";
+
+/** Name of the event the shell emits to the main window when the device list changes. */
+export const DEVICES_EVENT = "devices-changed";

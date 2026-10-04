@@ -4,14 +4,16 @@ import { useEffect, useState } from "react";
 
 import { isStringKey, t, type StringKey } from "../shared/localization/t";
 import {
+    DEVICES_EVENT,
     STATUS_EVENT,
+    type DevicesState,
     type EndReason,
     type EngineStatus,
     type ErrorInfo,
-    type Keyboard,
     type LockOptions,
     type SessionState,
 } from "../shared/types/engine";
+import { DeviceList } from "../ui/devices/DeviceList";
 
 const STATE_KEYS: Record<SessionState, StringKey> = {
     idle: "status.idle",
@@ -90,7 +92,7 @@ export function App() {
     const [status, setStatus] = useState<EngineStatus | null>(null);
     const [options, setOptions] = useState<LockOptions | null>(null);
     const [selected, setSelected] = useState<number | null>(null);
-    const [keyboards, setKeyboards] = useState<Keyboard[] | null>(null);
+    const [devices, setDevices] = useState<DevicesState | null>(null);
     const [requestError, setRequestError] = useState<ErrorInfo | null>(null);
 
     useEffect(() => {
@@ -130,16 +132,36 @@ export function App() {
         };
     }, []);
 
-    const deviceChanges = status?.deviceChanges ?? 0;
-
-    // Lists keyboards on start and again after a keyboard is connected or disconnected.
+    // The device list updates when devices are connected or disconnected. Subscribes first, then
+    // asks for the current list, so an update in between isn't missed.
     useEffect(() => {
-        invoke<Keyboard[]>("list_keyboards")
-            .then(setKeyboards)
+        let unlisten: (() => void) | undefined;
+        let disposed = false;
+
+        getCurrentWebviewWindow()
+            .listen<DevicesState>(DEVICES_EVENT, (event) => {
+                setDevices(event.payload);
+            })
+            .then((fn) => {
+                if (disposed) {
+                    fn();
+                    return undefined;
+                }
+                unlisten = fn;
+                return invoke<DevicesState>("list_devices").then((current) => {
+                    // An event that arrived meanwhile is newer than this answer.
+                    setDevices((latest) => latest ?? current);
+                });
+            })
             .catch((err: unknown) => {
                 setRequestError(toErrorInfo(err));
             });
-    }, [deviceChanges]);
+
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
+    }, []);
 
     const seconds = selected ?? options?.defaultSeconds ?? null;
 
@@ -263,18 +285,11 @@ export function App() {
 
             <section className="flex flex-col gap-2">
                 <h2 className="text-lg font-semibold">{t("devices.title")}</h2>
-                {keyboards === null ? null : keyboards.length === 0 ? (
-                    <p className="text-sm text-neutral-600">{t("devices.none")}</p>
-                ) : (
-                    <ul className="flex flex-col gap-1">
-                        {keyboards.map((k) => (
-                            <li key={k.id} className="break-words">
-                                {k.name ?? t("devices.unnamed")}
-                            </li>
-                        ))}
-                    </ul>
-                )}
-                <p className="text-xs text-neutral-500">{t("devices.allLocked")}</p>
+                {devices?.error && <ErrorMessage error={devices.error} />}
+                {devices && <DeviceList devices={devices.devices} />}
+                <p className="text-xs text-neutral-500">
+                    {t("devices.allLocked")} {t("devices.notLockedYet")}
+                </p>
             </section>
         </main>
     );
