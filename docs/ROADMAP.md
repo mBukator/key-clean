@@ -137,7 +137,18 @@ Acceptance (§60 "Timer"):
 ### M3 - Safety hardening
 
 Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
-(S17-S23, plus `--stall` for S20) and Parts B and C of `docs/testing/manual/M3.md`.
+(S17-S24, plus `--stall` for S20 and `--raw-diag` for S25) and Parts B and C of
+`docs/testing/manual/M3.md`.
+
+Harness, 2026-10-04: **22/22 passed**, plus S20 and S25 run once each. The first run found two bugs:
+
+- **S19:** the watchdog's `abort()` went through Windows Error Reporting, which kept a hung engine,
+  and its hook, about 5 s longer. It now uses `TerminateProcess`.
+- **S17:** S6's synthesized Win+G opened the Xbox Game Bar. While its overlay is open, Windows
+  delivers no Raw Input, so the lost-hook check is blind. Win+G left S6, and the limitation is
+  documented in ADR 0010.
+
+Parts B and C are pending.
 
 Done in code:
 
