@@ -209,7 +209,8 @@ Done in code:
 - **Device model (`keyclean-core::devices`).** Pure, unit-tested: Keyboard and Mouse are Supported,
   a precision touchpad (HID 0x0D/0x05) is Limited, touchscreens and pens are Unsupported, other HID
   collections are ignored. A touchpad's companion mouse collection (same parent device node) folds
-  into it, and the same for touchscreens and pens. Nothing else is merged.
+  into it, and the same for touchscreens and pens. Same-kind entries in one external container fold
+  into one row; built-in devices never fold by container. Nothing else is merged.
 - **Enumeration (`keyclean-win::devices::input_devices`).** Raw Input list plus `RIDI_DEVICEINFO`
   usage, friendly names from the configuration manager. Replaces `list_keyboards`.
 - **Live updates (ADR 0012).** `CM_Register_Notification` for the keyboard, mouse and HID interface
@@ -221,13 +222,15 @@ Done in code:
 - **Harness.** S1 counts keyboards among all devices; S22 now runs with the device watch active.
 - **Research.** `docs/research/m4-devices.md`.
 
-Harness, 2026-10-04: **22/22 passed** on Max's machine. S1 listed 4 keyboards among 8 devices (more
-than one physical keyboard is unlikely, so Part B step 2 checks for duplicate rows). S22 passed with
+Harness, 2026-10-04: **22/22 passed** on Max's machine. S1 listed 4 keyboards among 8 devices.
+First Part B list: 8 rows for what is really a laptop plus two USB devices. A USB keyboard
+(two keyboard interfaces, one mouse interface) showed 3 rows, so entries of the same kind in one
+external container now fold into one row, and external devices are named by what their bus reports
+("HyperX Alloy Origins") instead of "HID Keyboard Device" (research note, "Duplicates and names"). S22 passed with
 the device watch running, so watching registers no input (invariant 4). Part B (the list in the
 window) is still to do.
 
-Open for the manual test: whether one physical keyboard can show as several rows (container folding
-was left out on purpose, see the research note), and whether the list is correct after sleep.
+Open for the manual test: the list after the fix (step 7), Bluetooth names, and the list after sleep.
 
 Scope: live keyboard / mouse / touchpad list (§24), arrival and removal via
 `CM_Register_Notification` in the app (ADR 0012; Raw Input stays unregistered at idle), capability

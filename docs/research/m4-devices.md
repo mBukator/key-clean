@@ -23,21 +23,42 @@ hardware]" means the M4 manual test records what Max's machine reports.
   Windows and to the M5 hook, so it is listed as a mouse. There is no guessing from names.
   [assumption]
 
-## Duplicates
+## Duplicates and names
 
-- A touchpad's optional mouse-mode collection can appear as a second Raw Input device, and
-  touchscreens and pens may expose one too. The list folds a `RIM_TYPEMOUSE` entry into a touchpad,
-  touchscreen or pen when both have the same **parent device node**
-  (`CM_Get_Parent`). [assumption: collections of one HID device share its device node as parent]
-  [needs hardware]
-- Nothing else is merged. Folding by `DEVPKEY_Device_ContainerId` was considered and left out:
-  the container ID groups the device nodes of one physical device [docs], but the docs I found don't
-  say whether devices built into the machine share one container, and merging two real internal
-  devices into one row is worse than a duplicate row.
-  https://learn.microsoft.com/en-us/windows-hardware/drivers/install/how-container-ids-are-generated
-- Known consequence: one physical keyboard that exposes several keyboard interfaces (for example a
-  boot keyboard plus an N-key-rollover one) may appear as more than one row. [needs hardware] M4.md
-  records what Max's machine shows; container folding can follow once there is data.
+What Max's machine reported (2026-10-04, `Get-PnpDevice` and the first Part B list) [tested]:
+
+- A USB keyboard (HyperX Alloy Origins, `VID_03F0&PID_0591`) exposes **two keyboard interfaces
+  (MI_00, MI_02) and one mouse interface (MI_01)**. Each interface has its own device node, all under
+  one USB composite device, all in one container. Raw Input listed them as three devices, the window
+  as three rows ("HID Keyboard Device" twice, "HID-compliant mouse").
+- A Logitech receiver (`VID_046D&PID_C548`) exposes a keyboard, a mouse and a **digitizer
+  collection with the precision-touchpad usage** (MI_03, "HID-compliant touch pad"). That is a
+  second "touchpad" row, although no touchpad is attached to the machine through it. The list shows
+  what Windows reports; the row is named "USB Receiver", so it is recognisable.
+- The laptop's own touchpad (ELAN1203) has a touchpad collection (Col02) and a mouse collection
+  (Col01) under **one parent device node** (`ACPI\ELAN1203`). Folding the mouse into the touchpad
+  by parent worked.
+- Built-in devices (the PS/2 keyboard, the ELAN touchpad) are all in the **machine container**
+  `{00000000-0000-0000-FFFF-FFFFFFFFFFFF}`, and `DEVPKEY_Device_InLocalMachineContainer` is true for
+  them and false for the USB devices. So the container can't tell built-in devices apart, and the
+  property is the test for "built in".
+- The USB composite device's `DEVPKEY_Device_BusReportedDeviceDesc` is the product name ("HyperX
+  Alloy Origins", "USB Receiver"). The HID interface nodes only say "HID Keyboard Device".
+
+What the list does with that:
+
+- A `RIM_TYPEMOUSE` entry folds into a touchpad, touchscreen or pen with the same **parent device
+  node** (`CM_Get_Parent`).
+- Entries of the **same kind in the same external container** become one row (the HyperX's two
+  keyboard interfaces). Built-in devices are never folded by container: they have none to compare,
+  and two real internal devices must not become one row. Entries are never merged by name.
+- For an external device the name is the first `BusReportedDeviceDesc` found on the device or an
+  ancestor **in the same container** (a hub or controller above it has another container, so its
+  name is never used); otherwise the usual friendly name.
+- A keyboard with a mouse interface also appears under Mice, with the same name. That is what
+  Windows exposes, and it is what a mouse lock (M5) will block.
+- Not known yet: whether Bluetooth and other buses report the same properties. [needs hardware]
+  If the bus reports nothing, the friendly name is used.
 
 ## Watching for changes
 

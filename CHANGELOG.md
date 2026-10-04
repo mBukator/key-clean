@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Device list (M4): keyboards, mice, touchpads, touchscreens and pens with friendly names, grouped by kind, each marked Supported, Limited or Unsupported (ADR 0004). A precision touchpad is Limited; touchscreens and pens are Unsupported.
 - The list updates by itself when a device is plugged in or unplugged, also while idle. It watches device interfaces with `CM_Register_Notification` in the app and registers for no input (ADR 0012).
 - The window says plainly that every keyboard is locked and mice and touchpads aren't yet.
+- External devices are named by what their bus reports (for example "HyperX Alloy Origins") instead of "HID Keyboard Device", and the interfaces of one physical device show as one row per kind.
 - Harness check S22 now runs with the device watch active; the M4 manual test and research note.
 
 ### Changed
