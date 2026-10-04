@@ -221,6 +221,11 @@ Done in code:
 - **Harness.** S1 counts keyboards among all devices; S22 now runs with the device watch active.
 - **Research.** `docs/research/m4-devices.md`.
 
+Harness, 2026-10-04: **22/22 passed** on Max's machine. S1 listed 4 keyboards among 8 devices (more
+than one physical keyboard is unlikely, so Part B step 2 checks for duplicate rows). S22 passed with
+the device watch running, so watching registers no input (invariant 4). Part B (the list in the
+window) is still to do.
+
 Open for the manual test: whether one physical keyboard can show as several rows (container folding
 was left out on purpose, see the research note), and whether the list is correct after sleep.
 
