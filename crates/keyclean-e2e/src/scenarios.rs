@@ -1035,7 +1035,9 @@ fn hook_lost(ctx: &mut Ctx<'_>) -> Outcome {
     let mut run = || -> Result<String, String> {
         let raw_before = testkit::raw_input_seen();
         ctx.rig.lock_and_wait(Duration::from_secs(10))?;
+        let registered = system::registered_raw_input_count();
         expect_probes_blocked(ctx.observer)?;
+        let raw_while_blocking = testkit::raw_input_seen().saturating_sub(raw_before);
         ctx.rig
             .engine()
             .testkit_drop_hook()
@@ -1045,10 +1047,17 @@ fn hook_lost(ctx: &mut Ctx<'_>) -> Outcome {
         if !probe_passes(ctx.observer, vk::F13)? {
             return Err("a probe was still blocked after the hook was removed".into());
         }
+        // Diagnostics for a failure: was Raw Input registered, and did blocked keys produce any?
+        let diag = || {
+            format!(
+                "registrations during the lock: {registered:?}; WM_INPUT while the hook blocked:                  {raw_while_blocking}; {}",
+                raw_input_note(raw_before)
+            )
+        };
         let ended = ctx
             .rig
             .wait_ended_with_errors(typed, Duration::from_secs(3))
-            .map_err(|e| format!("{e}; {}", raw_input_note(raw_before)))?;
+            .map_err(|e| format!("{e}; {}", diag()))?;
         expect_reason(&ended, EndReason::EngineError)?;
         if !ended.errors.iter().any(|k| k == "error.hook_lost") {
             return Err(format!(
@@ -1223,6 +1232,12 @@ fn engine_hang(ctx: &mut Ctx<'_>) -> Outcome {
         if code == Some(4) {
             return Err("the watchdog didn't end the hung child".into());
         }
+        let expected = i32::try_from(testkit::WATCHDOG_EXIT_CODE).ok();
+        if code != expected {
+            return Err(format!(
+                "the child ended {after:.2} s after the hang with exit code {code:?}, not the                  watchdog's {expected:?}"
+            ));
+        }
         if !(11.5..=15.5).contains(&after) {
             return Err(format!(
                 "the child ended {after:.2} s after the hang (expected about 14 s: 13 s hard \
@@ -1376,4 +1391,49 @@ fn taskkill_app(ctx: &mut Ctx<'_>) -> Outcome {
     crate::harness::release_watched_keys();
     sleep(WEBVIEW_SETTLE);
     result.into()
+}
+
+/// S24: S17 again, after the observer hook is gone, so the engine's hook is the only one in this
+/// process, as in the real engine process. If S17 fails and S24 passes, the observer (a second
+/// low-level hook in the same process) was what kept `WM_INPUT` away, not the detector.
+pub fn hook_lost_without_observer() -> Outcome {
+    let run = || -> Result<String, String> {
+        let mut rig = EngineRig::start()?;
+        let raw_before = testkit::raw_input_seen();
+        rig.lock_and_wait(Duration::from_secs(10))?;
+        let registered = system::registered_raw_input_count();
+        rig.engine().testkit_drop_hook().map_err(|e| e.details())?;
+        sleep(Duration::from_millis(100));
+        let typed = Instant::now();
+        // F13 is harmless if it reaches the focused window.
+        send(&[Stroke::down(vk::F13), Stroke::up(vk::F13)])?;
+        let result = rig
+            .wait_ended_with_errors(typed, Duration::from_secs(3))
+            .map_err(|e| {
+                format!(
+                    "{e}; registrations during the lock: {registered:?}; {}",
+                    raw_input_note(raw_before)
+                )
+            })
+            .and_then(|ended| {
+                expect_reason(&ended, EndReason::EngineError)?;
+                if !ended.errors.iter().any(|k| k == "error.hook_lost") {
+                    return Err(format!(
+                        "ended without error.hook_lost (errors: {:?})",
+                        ended.errors
+                    ));
+                }
+                Ok(ended)
+            });
+        rig.ensure_idle();
+        let ended = result?;
+        expect_no_stuck_keys()?;
+        expect_no_raw_input_registration()?;
+        Ok(format!(
+            "lock ended {} ms after the leaked key; {}",
+            ended.after.as_millis(),
+            raw_input_note(raw_before)
+        ))
+    };
+    run().into()
 }

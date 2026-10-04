@@ -17,6 +17,8 @@ pub mod inject;
 pub mod observer;
 pub mod system;
 
+pub use crate::watchdog::WATCHDOG_EXIT_CODE;
+
 use std::sync::atomic::Ordering;
 
 /// Makes the next keyboard hook callback sleep for `ms` milliseconds, to provoke a real

@@ -21,7 +21,10 @@ hook.
    the decision code passes the event instead of crossing into Windows (invariant 10).
 3. **Watchdog escalation.** A separate thread waits (no polling) for the hard deadline. When it passes,
    the watchdog switches the hook to Passthrough so every event passes, posts `WM_WATCHDOG_EXPIRED` to
-   the engine, and if the engine doesn't acknowledge within **1 s**, calls `std::process::abort()`.
+   the engine, and if the engine doesn't acknowledge within **1 s**, ends the process with
+   `TerminateProcess` on itself (exit code `0x4B43`; amended in M3: `std::process::abort()` went
+   through Windows Error Reporting, which held the process, and its hook, for about 5 s; `abort()`
+   stays as the fallback).
 4. **The hard deadline is enforced twice** (invariant 6): the hook compares QPC ticks with an atomic
    deadline on every event, and the watchdog fires on its own. Hard deadline =
    `min(max_lock, session + 10 s)`.

@@ -12,7 +12,7 @@
 //! Exits from a lock, each independent of the others (invariant 1):
 //! - the session timer (`SetTimer` on the engine window) → `Timeout`;
 //! - the hard deadline, checked inside the hook on every event → `HardDeadline`;
-//! - the hard deadline, enforced by the watchdog thread → `HardDeadline` (or process abort);
+//! - the hard deadline, enforced by the watchdog thread → `HardDeadline` (or process termination);
 //! - the emergency chord, detected inside the hook → `Emergency`;
 //! - system transitions (suspend, end of session, workstation lock, disconnect);
 //! - process exit, after which Windows removes the hook.
@@ -284,7 +284,7 @@ impl Engine {
     }
 
     /// Testkit only: the engine thread sleeps for `duration`, as if hung. Run it in a child
-    /// process: the watchdog may abort the process at the hard deadline.
+    /// process: the watchdog may end the process at the hard deadline.
     #[cfg(feature = "testkit")]
     pub fn testkit_hang(&self, duration: Duration) -> Result<(), EngineError> {
         self.send(Command::Hang(duration))

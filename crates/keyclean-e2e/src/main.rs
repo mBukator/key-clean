@@ -201,6 +201,10 @@ fn run(options: &Options) -> i32 {
         scenarios.push(scenarios::session_lock_scenario());
     }
 
+    let run_s24 = options
+        .only
+        .as_ref()
+        .is_none_or(|only| only.iter().any(|id| id == "S24"));
     let run_s14 = !options.skip_app
         && options
             .only
@@ -208,7 +212,7 @@ fn run(options: &Options) -> i32 {
             .is_none_or(|only| only.iter().any(|id| id == "S14"));
     if let Some(only) = &options.only {
         for id in only {
-            if id != "S14" && !scenarios.iter().any(|s| s.id == id.as_str()) {
+            if id != "S14" && id != "S24" && !scenarios.iter().any(|s| s.id == id.as_str()) {
                 let hint = if id == "S13" {
                     " (S13 also needs --session-lock)"
                 } else if id == "S20" {
@@ -224,7 +228,7 @@ fn run(options: &Options) -> i32 {
             }
         }
         scenarios.retain(|s| only.iter().any(|id| id == s.id));
-        if scenarios.is_empty() && !run_s14 {
+        if scenarios.is_empty() && !run_s14 && !run_s24 {
             eprintln!("--only matched no checks");
             return EXIT_SETUP;
         }
@@ -254,6 +258,26 @@ fn run(options: &Options) -> i32 {
 
     drop(rig);
     drop(observer);
+
+    // S24 repeats S17 without the observer hook (a second low-level hook in this process).
+    if run_s24 {
+        print!("S24 A removed hook is detected with no other hook in the process ... ");
+        let outcome = scenarios::hook_lost_without_observer();
+        println!(
+            "{}",
+            match &outcome {
+                Outcome::Pass(_) => "PASS",
+                Outcome::Fail(_) => "FAIL",
+                Outcome::Skip(_) => "SKIP",
+            }
+        );
+        report.add(
+            "S24",
+            "M3 A",
+            "A removed hook is detected with no other hook in the process",
+            outcome,
+        );
+    }
 
     // S14 runs last and without the observer hook, which could mask the bug it looks for.
     if run_s14 {
