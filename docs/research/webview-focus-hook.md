@@ -47,8 +47,10 @@ Treat Win+G and Fn/brightness like Win+L: documented as unblockable, not bugs. F
 are commonly handled by keyboard firmware or ACPI and never reach the hook [assumption, consistent with
 the result].
 
-**Note on Win+G.** Harness check S6 sends a synthesized Win+G and it is blocked, while the real key
-gets through. Re-checked on 2026-10-03 with the engine in its own process and Notepad focused: the real
+**Note on Win+G.** Harness check S6 used to send a synthesized Win+G, and its observer saw nothing get
+through. It turned out the Game Bar opened anyway (2026-10-04, M3): it reacts to Win+G outside the
+hook chain, so "blocked" only meant the key events didn't reach other hooks. S6 no longer sends it.
+The real key gets through as well. Re-checked on 2026-10-03 with the engine in its own process and Notepad focused: the real
 Win+G still opened Game Bar [tested], so this is not the focus bug. Win on its own is blocked (F1), so
 the hook does see the Win key. Game Bar probably receives the physical shortcut through a path that
 doesn't pass through low-level hooks [assumption; no documentation found]. Documented as

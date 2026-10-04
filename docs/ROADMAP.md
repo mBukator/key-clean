@@ -144,6 +144,8 @@ Done in code:
 - **Lost-hook check (ADR 0010).** During a session only, a Raw Input sink on the engine window
   (`RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`) is compared with the hook's last-callback time. A lost hook
   ends the lock with `error.hook_lost`.
+  Known limitation: while the Xbox Game Bar overlay is open (Win+G can't be blocked), Windows
+  delivers no raw input, so the check is blind; the lock itself keeps working (harness S25).
 - **Admin windows.** When an elevated window has focus, the lock stays on with a warning (Max's
   decision, 2026-10-04).
 - **Keyboard notices.** Connecting or disconnecting a keyboard during a lock shows a notice and

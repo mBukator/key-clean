@@ -162,6 +162,19 @@ pub fn foreground_pid() -> Option<u32> {
     (pid != 0).then_some(pid)
 }
 
+/// The foreground window's class name and owning process id, for diagnostics.
+pub fn foreground_window() -> Option<(String, u32)> {
+    // SAFETY: no preconditions; returns a null handle if no window is in the foreground.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return None;
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is writable; a window that just closed makes the call return 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    Some((window_info(hwnd.0 as isize).class, pid))
+}
+
 /// Locks the workstation, as Win+L does. The user has to sign back in.
 pub fn lock_workstation() -> windows::core::Result<()> {
     // SAFETY: no preconditions; returns an error if the workstation can't be locked.

@@ -360,17 +360,24 @@ fn held_at_start(ctx: &mut Ctx<'_>) -> Outcome {
     result.into()
 }
 
+/// System shortcuts S6 sends during a lock. Shortcuts that open something come last, in case one
+/// gets through. Win+G isn't here: it is documented as unblockable (the Game Bar acts on it outside
+/// the hook, even when synthesized), and the open overlay would spoil later checks (see S25).
+const SHORTCUTS: [(&str, &[u8]); 6] = [
+    ("Win", &[vk::LWIN]),
+    ("Alt+Tab", &[vk::LMENU, vk::TAB]),
+    ("Ctrl+Esc", &[vk::LCONTROL, vk::ESCAPE]),
+    ("Win+X", &[vk::LWIN, vk::X]),
+    ("Volume up", &[vk::VOLUME_UP]),
+    ("Ctrl+Shift+Esc", &[vk::LCONTROL, vk::LSHIFT, vk::ESCAPE]),
+];
+
+/// Opens the Xbox Game Bar even during a lock. While its overlay is open, Windows delivers no Raw
+/// Input to KeyClean, so the lost-hook check can't run (ADR 0010) [tested 2026-10-04, S25].
+const GAME_BAR: (&str, &[u8]) = ("Win+G", &[vk::LWIN, vk::G]);
+
 fn shortcuts(ctx: &mut Ctx<'_>) -> Outcome {
-    // Shortcuts that open something come last, in case one gets through.
-    let combos: [(&str, &[u8]); 7] = [
-        ("Win", &[vk::LWIN]),
-        ("Alt+Tab", &[vk::LMENU, vk::TAB]),
-        ("Ctrl+Esc", &[vk::LCONTROL, vk::ESCAPE]),
-        ("Win+X", &[vk::LWIN, vk::X]),
-        ("Volume up", &[vk::VOLUME_UP]),
-        ("Ctrl+Shift+Esc", &[vk::LCONTROL, vk::LSHIFT, vk::ESCAPE]),
-        ("Win+G", &[vk::LWIN, vk::G]),
-    ];
+    let combos = SHORTCUTS;
     let mut run = || -> Result<String, String> {
         let since = ctx.rig.lock_and_wait(Duration::from_secs(12))?;
         let mut leaked = Vec::new();
@@ -1017,6 +1024,26 @@ pub fn focused_app_chord() -> Outcome {
 /// runs 250 ms after the first `WM_INPUT`, plus margin.
 const HOOK_LOST_LIMIT: Duration = Duration::from_secs(1);
 
+/// The focused window's class and process image name, for failure messages.
+fn foreground_note() -> String {
+    let Some((class, pid)) = system::foreground_window() else {
+        return "no foreground window".into();
+    };
+    let image = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()
+        .ok()
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .and_then(|l| l.split(',').next())
+                .map(|name| name.trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| "?".into());
+    format!("foreground: {class} in {image} (pid {pid})")
+}
+
 /// What the engine's Raw Input sink saw, for failure messages: "no WM_INPUT" means the detector
 /// had nothing to compare (e.g. injected keys don't produce raw input), not that it ignored it.
 fn raw_input_note(before: u64) -> String {
@@ -1047,10 +1074,12 @@ fn hook_lost(ctx: &mut Ctx<'_>) -> Outcome {
         if !probe_passes(ctx.observer, vk::F13)? {
             return Err("a probe was still blocked after the hook was removed".into());
         }
-        // Diagnostics for a failure: was Raw Input registered, and did blocked keys produce any?
+        // Diagnostics for a failure: was Raw Input registered, did blocked keys produce any, and
+        // what had focus when the key got through?
+        let focus = foreground_note();
         let diag = || {
             format!(
-                "registrations during the lock: {registered:?}; WM_INPUT while the hook blocked:                  {raw_while_blocking}; {}",
+                "registrations during the lock: {registered:?}; WM_INPUT while the hook blocked:                  {raw_while_blocking}; {}; {focus}",
                 raw_input_note(raw_before)
             )
         };
@@ -1394,8 +1423,7 @@ fn taskkill_app(ctx: &mut Ctx<'_>) -> Outcome {
 }
 
 /// S24: S17 again, after the observer hook is gone, so the engine's hook is the only one in this
-/// process, as in the real engine process. If S17 fails and S24 passes, the observer (a second
-/// low-level hook in the same process) was what kept `WM_INPUT` away, not the detector.
+/// process, as in the real engine process.
 pub fn hook_lost_without_observer() -> Outcome {
     let run = || -> Result<String, String> {
         let mut rig = EngineRig::start()?;
@@ -1436,4 +1464,70 @@ pub fn hook_lost_without_observer() -> Outcome {
         ))
     };
     run().into()
+}
+
+/// S25 (opt-in diagnostic, `--raw-diag`): does the lost-hook check still work after each system
+/// shortcut? For a baseline and then each shortcut alone, a fresh engine locks, receives the
+/// shortcut, is unlocked with Ctrl+Alt+K, and then runs the S24 lost-hook check. Win+G runs last
+/// and is expected to break it (the Game Bar overlay stays open; close it afterwards). Runs
+/// without the observer hook, after the main checks.
+pub fn raw_input_diagnostic() -> Outcome {
+    let mut lines = Vec::new();
+    let mut broken = Vec::new();
+    let cases = std::iter::once(("baseline (no shortcut)", &[][..]))
+        .chain(SHORTCUTS)
+        .chain([GAME_BAR]);
+    for (name, keys) in cases {
+        let result = (|| -> Result<String, String> {
+            let mut rig = EngineRig::start()?;
+            if !keys.is_empty() {
+                let since = rig.lock_and_wait(Duration::from_secs(10))?;
+                send(&chord_strokes(keys))?;
+                sleep(Duration::from_millis(250));
+                send(&chord_strokes(&CHORD))?;
+                let ended = rig.wait_ended(since, Duration::from_secs(3));
+                rig.ensure_idle();
+                ended?;
+            }
+            let raw_before = testkit::raw_input_seen();
+            rig.lock_and_wait(Duration::from_secs(10))?;
+            rig.engine().testkit_drop_hook().map_err(|e| e.details())?;
+            sleep(Duration::from_millis(100));
+            let focus = foreground_note();
+            let typed = Instant::now();
+            send(&[Stroke::down(vk::F13), Stroke::up(vk::F13)])?;
+            let ended = rig.wait_ended_with_errors(typed, Duration::from_secs(2));
+            rig.ensure_idle();
+            let seen = testkit::raw_input_seen().saturating_sub(raw_before);
+            Ok(match ended {
+                Ok(e) if e.errors.iter().any(|k| k == "error.hook_lost") => {
+                    format!("ok ({} ms, {seen} WM_INPUT; {focus})", e.after.as_millis())
+                }
+                _ => {
+                    broken.push(name);
+                    format!("BROKEN ({seen} WM_INPUT; {focus})")
+                }
+            })
+        })();
+        let line = result.unwrap_or_else(|e| {
+            broken.push(name);
+            format!("error: {e}")
+        });
+        lines.push(format!("{name}: {line}"));
+        crate::harness::release_watched_keys();
+    }
+    let detail = format!(
+        "{}; close the Game Bar overlay now (Win+G or click outside it)",
+        lines.join(" | ")
+    );
+    // Win+G breaking the check is the documented limitation; anything else is a finding.
+    broken.retain(|&name| name != GAME_BAR.0);
+    if broken.is_empty() {
+        Outcome::Pass(detail)
+    } else {
+        Outcome::Fail(format!(
+            "raw input lost after: {}; {detail}",
+            broken.join(", ")
+        ))
+    }
 }

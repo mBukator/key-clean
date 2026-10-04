@@ -69,3 +69,12 @@ which needs device notifications.
   nor any key data.
 - If the raw sink also misses keys meant for elevated windows (UIPI), the elevated warning never
   shows, and behaviour stays as in M1. M3 step 7 records which case applies.
+- **Known limitation: the Xbox Game Bar.** Win+G opens it even during a lock, physical or synthesized,
+  because the Game Bar acts on it outside the hook. While its overlay is open, Windows delivers no Raw
+  Input to KeyClean at all. [tested 2026-10-04: harness S25; every other system shortcut leaves the
+  check working.] So a lost hook can't be detected until the overlay closes.
+    - The lock itself is unaffected: the hook still blocks, and the timer, Ctrl+Alt+K and the hard
+      deadline still end it.
+    - The check stays silent rather than misfiring.
+    - It takes a hook failure and an open overlay at the same time to matter. Accepted rather than
+      worked around. M3 step 11 checks the physical case.

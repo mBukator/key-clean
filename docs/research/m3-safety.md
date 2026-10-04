@@ -33,6 +33,19 @@ Findings behind the M3 safety hardening: hook-liveness detection, device changes
   (M1 step 11), decides whether the elevated-window warning ever shows. M3 step 7 records it.
   [needs prototype]
 
+## The Xbox Game Bar blinds the Raw Input sink
+
+- Win+G opens the Game Bar during a lock, synthesized as well as physical, although the hook blocks
+  both key events. The harness's observer hook never sees them. [tested 2026-10-04, photo of S6]
+- While the overlay is open, Windows delivers no `WM_INPUT` to KeyClean's `RIDEV_INPUTSINK` window,
+  although the registration is in place. The foreground window stays the same (here the Claude
+  desktop app). [tested: S25. The baseline, Win, Alt+Tab, Ctrl+Esc, Win+X, Volume up and
+  Ctrl+Shift+Esc all left the check working; only Win+G broke it.]
+- Why is undocumented. A plausible cause is that the Game Bar overlay takes raw keyboard input
+  exclusively while open [assumption].
+- Consequence: the lost-hook check is blind while the overlay is open (ADR 0010, "Known
+  limitation"). The hook keeps blocking.
+
 ## Silent hook removal
 
 - On Windows 7 and later, a low-level hook whose callback exceeds `LowLevelHooksTimeout` is removed

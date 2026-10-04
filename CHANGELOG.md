@@ -31,7 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A warning when typing reaches an administrator window during a lock; the lock stays on everywhere else.
 - Notices when a keyboard is connected or disconnected during a lock; the keyboard list refreshes.
 - Automatic engine restart: if the engine process dies, the app starts a new idle one, at most 3 times in 5 minutes (ADR 0011).
-- Harness checks S17-S23 (lost hook, failed hook install, hung engine thread, real hook timeout with `--stall`, engine killed, no Raw Input registration at idle, `taskkill` without `/F`), the M3 manual test, ADRs 0010 and 0011, and the M3 research notes.
+- Harness checks S17-S25 (lost hook, failed hook install, hung engine thread, real hook timeout with `--stall`, engine killed, no Raw Input registration at idle, `taskkill` without `/F`, lost hook with no other hook in the process, and the opt-in `--raw-diag` shortcut diagnostic), the M3 manual test, ADRs 0010 and 0011, and the M3 research notes.
+
+### Changed
+
+- The watchdog ends a hung engine with `TerminateProcess` instead of `abort()`, which went through Windows Error Reporting and kept the hook installed about 5 s longer.
+- Harness check S6 no longer sends Win+G: it opens the Xbox Game Bar despite the lock, which blinds the lost-hook check while the overlay is open (documented limitation).
 
 ### Fixed
 

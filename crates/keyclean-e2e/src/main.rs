@@ -47,6 +47,7 @@ struct Options {
     skip_app: bool,
     session_lock: bool,
     stall: bool,
+    raw_diag: bool,
     only: Option<Vec<String>>,
 }
 
@@ -56,6 +57,7 @@ impl Options {
             skip_app: false,
             session_lock: false,
             stall: false,
+            raw_diag: false,
             only: None,
         };
         let mut args = std::env::args().skip(1);
@@ -72,6 +74,7 @@ impl Options {
                 "--skip-app" => options.skip_app = true,
                 "--session-lock" => options.session_lock = true,
                 "--stall" => options.stall = true,
+                "--raw-diag" => options.raw_diag = true,
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown option {other}\n\n{USAGE}")),
             }
@@ -85,7 +88,8 @@ const USAGE: &str =
   --only IDS      run only these checks (comma-separated IDs from the report)
   --skip-app      skip the scenarios that start the app (target/debug/keyclean.exe)
   --session-lock  also lock the workstation (you'll have to sign back in); runs last
-  --stall         also stall the hook past Windows' timeout (S20; input lags up to 1 s once)";
+  --stall         also stall the hook past Windows' timeout (S20; input lags up to 1 s once)
+  --raw-diag      also run S25: the lost-hook check after each system shortcut (opens Game Bar)";
 
 /// Kills this process after `RUN_LIMIT`, from outside, in case the harness hangs. Disarmed on
 /// drop.
@@ -212,7 +216,9 @@ fn run(options: &Options) -> i32 {
             .is_none_or(|only| only.iter().any(|id| id == "S14"));
     if let Some(only) = &options.only {
         for id in only {
-            if id != "S14" && id != "S24" && !scenarios.iter().any(|s| s.id == id.as_str()) {
+            if !["S14", "S24", "S25"].contains(&id.as_str())
+                && !scenarios.iter().any(|s| s.id == id.as_str())
+            {
                 let hint = if id == "S13" {
                     " (S13 also needs --session-lock)"
                 } else if id == "S20" {
@@ -228,7 +234,7 @@ fn run(options: &Options) -> i32 {
             }
         }
         scenarios.retain(|s| only.iter().any(|id| id == s.id));
-        if scenarios.is_empty() && !run_s14 && !run_s24 {
+        if scenarios.is_empty() && !run_s14 && !run_s24 && !options.raw_diag {
             eprintln!("--only matched no checks");
             return EXIT_SETUP;
         }
@@ -259,7 +265,7 @@ fn run(options: &Options) -> i32 {
     drop(rig);
     drop(observer);
 
-    // S24 repeats S17 without the observer hook (a second low-level hook in this process).
+    // S24 repeats S17 without the observer hook, as in the real engine process.
     if run_s24 {
         print!("S24 A removed hook is detected with no other hook in the process ... ");
         let outcome = scenarios::hook_lost_without_observer();
@@ -275,6 +281,25 @@ fn run(options: &Options) -> i32 {
             "S24",
             "M3 A",
             "A removed hook is detected with no other hook in the process",
+            outcome,
+        );
+    }
+
+    if options.raw_diag {
+        print!("S25 Raw Input after each system shortcut (diagnostic) ... ");
+        let outcome = scenarios::raw_input_diagnostic();
+        println!(
+            "{}",
+            match &outcome {
+                Outcome::Pass(_) => "PASS",
+                Outcome::Fail(_) => "FAIL",
+                Outcome::Skip(_) => "SKIP",
+            }
+        );
+        report.add(
+            "S25",
+            "diagnostic",
+            "Raw Input after each system shortcut",
             outcome,
         );
     }
