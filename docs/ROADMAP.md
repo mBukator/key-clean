@@ -191,7 +191,8 @@ Acceptance:
 
 ### M6 - Full-screen overlay
 
-Status: not started. Manual test: `docs/testing/manual/M6.md`.
+Status: not started. Manual test: `docs/testing/manual/M6.md`. Design: `docs/design/overlay.png`
+(see `docs/design/README.md`).
 
 Scope: overlay on **the monitor under the cursor first** (Max's decision; all monitors later). Order:
 show the overlay, wait for the webview's ack (after a double `requestAnimationFrame`), then engage the
@@ -211,7 +212,8 @@ Acceptance (§60 "Overlay"):
 
 ### M7 - MVP dashboard
 
-Status: not started. Manual test: `docs/testing/manual/M7.md`.
+Status: not started. Manual test: `docs/testing/manual/M7.md`. Design: `docs/design/clean-ready.png`
+(see `docs/design/README.md`).
 
 Scope: dashboard (§9), clean screen and device selection (§10, §25 reduced to keyboard/mouse on-off per
 ADR 0004), duration selector, Lock button, unlock state, plain-language errors with "View technical
