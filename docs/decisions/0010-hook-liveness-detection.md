@@ -67,8 +67,9 @@ which needs device notifications.
 - A false positive ends a lock early, which is the safe direction.
 - During a lock KeyClean holds a second input registration. The engine reads neither its contents
   nor any key data.
-- If the raw sink also misses keys meant for elevated windows (UIPI), the elevated warning never
-  shows, and behaviour stays as in M1. M3 step 7 records which case applies.
+- **Elevated windows, measured on Max's machine.** M3 step 7 (2026-10-04) found typing into an
+  elevated window **blocked** by the hook, unlike M1 step 11 (2026-10-02, before ADR 0009), so the
+  warning didn't show. It stays as a fallback for setups where keys do reach elevated windows.
 - **Known limitation: the Xbox Game Bar.** Win+G opens it even during a lock, physical or synthesized,
   because the Game Bar acts on it outside the hook. While its overlay is open, Windows delivers no Raw
   Input to KeyClean at all. [tested 2026-10-04: harness S25; every other system shortcut leaves the

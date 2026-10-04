@@ -29,9 +29,13 @@ Findings behind the M3 safety hardening: hook-liveness detection, device changes
   is not documented. The liveness rule works in every combination (ADR 0010). [needs prototype]
 - Whether `SendInput` keys produce `WM_INPUT` decides whether harness checks S17 and S20 can work at
   all. Their failure message says whether the engine saw any `WM_INPUT`. [needs prototype]
-- Whether the raw input sink sees keys typed into an elevated window, which the hook doesn't see
-  (M1 step 11), decides whether the elevated-window warning ever shows. M3 step 7 records it.
-  [needs prototype]
+- Typing into an elevated window during a lock:
+    - **M1 step 11 (2026-10-02, engine in the app process):** the keys got through.
+    - **M3 step 7 (2026-10-04, engine in its own process, ADR 0009):** the hook blocked them, so
+      the elevated-window warning had nothing to report.
+    - [tested, both] Why they differ is unknown. The engine process is the obvious change, but
+      that's an [assumption]. The warning stays in place as a fallback for machines or windows
+      where keys do get through.
 
 ## The Xbox Game Bar blinds the Raw Input sink
 

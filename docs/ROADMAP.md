@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                           |
-| ---------------------------------------------- | ----------- | ------------------------------------------------ |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                         |
-| M3 Safety hardening                            | §53 Phase 2 | **code-complete - awaiting manual verification** |
-| M4 Device detection                            | §52 Phase 1 | not started                                      |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
-| M8 System tray                                 | §55 Phase 4 | not started                                      |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
-| M11 Packaging                                  | §55 Phase 4 | not started                                      |
-| M12 Open-source release                        | §56 Phase 5 | not started                                      |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
+| Milestone                                      | Phase       | Status                                      |
+| ---------------------------------------------- | ----------- | ------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
+| M4 Device detection                            | §52 Phase 1 | not started                                 |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
+| M8 System tray                                 | §55 Phase 4 | not started                                 |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
+| M11 Packaging                                  | §55 Phase 4 | not started                                 |
+| M12 Open-source release                        | §56 Phase 5 | not started                                 |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
 
 ---
 
@@ -136,7 +136,7 @@ Acceptance (§60 "Timer"):
 
 ### M3 - Safety hardening
 
-Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+Status: **done** (verified by Max, 2026-10-04). Verification: `cargo run -p keyclean-e2e`
 (S17-S24, plus `--stall` for S20 and `--raw-diag` for S25) and Parts B and C of
 `docs/testing/manual/M3.md`.
 
@@ -148,7 +148,15 @@ Harness, 2026-10-04: **22/22 passed**, plus S20 and S25 run once each. The first
   delivers no Raw Input, so the lost-hook check is blind. Win+G left S6, and the limitation is
   documented in ADR 0010.
 
-Parts B and C are pending.
+Manual Parts B and C, 2026-10-04: all passed except the skipped optional steps (3, sign-out and
+session disconnect; 10, drift under load).
+
+- **Shutdown and restart:** neither was delayed, and KeyClean was idle afterwards.
+- **Sleep** (S3 standby): ended as "the computer was locked".
+- **Others that passed:** the clock jump of ±1 h, keyboard unplug and replug, killing the engine,
+  `taskkill` without `/F`, and the physical Win+G.
+- **Admin window (step 7):** typing into an elevated window was **blocked**. In M1 it got through,
+  before the engine moved to its own process.
 
 Done in code:
 
@@ -180,14 +188,14 @@ instead.
 
 Acceptance (§60 "Safety"):
 
-- [ ] Forced app termination tested
-- [ ] Sleep/wake tested
-- [ ] Shutdown tested
-- [ ] Restart tested
-- [ ] Device disconnect tested
-- [ ] Device reconnect tested
-- [ ] Silent hook removal is detected and reported (input released, user told)
-- [ ] Clock change does not change the lock length
+- [x] Forced app termination tested
+- [x] Sleep/wake tested
+- [x] Shutdown tested
+- [x] Restart tested
+- [x] Device disconnect tested
+- [x] Device reconnect tested
+- [x] Silent hook removal is detected and reported (input released, user told)
+- [x] Clock change does not change the lock length
 
 ## Phase 1 (continued) - devices and pointing input (§52, §22-§24)
 
