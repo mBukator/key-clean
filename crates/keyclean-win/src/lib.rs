@@ -5,6 +5,7 @@
 
 pub mod client;
 mod close_guard;
+mod device_watch;
 mod devices;
 mod engine;
 mod error;
@@ -22,7 +23,8 @@ mod watchdog;
 
 pub use client::EngineClient;
 pub use close_guard::guard_helper_windows;
-pub use devices::KeyboardDevice;
+pub use device_watch::DeviceWatch;
+pub use devices::input_devices;
 pub use engine::{
     DeviceChange, Engine, EngineEvent, EngineNotice, EngineStatus, LockRequest, safety_profile,
 };

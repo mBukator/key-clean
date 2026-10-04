@@ -1,14 +1,17 @@
-//! Keyboard enumeration through Raw Input and the configuration manager.
+//! Input device enumeration through Raw Input and the configuration manager.
 //!
 //! Listing devices doesn't register for input, so KeyClean still sees no keystrokes while idle
 //! (invariant 4). Names come from `DEVPKEY_Device_FriendlyName`, falling back to `DEVPKEY_NAME`.
-//! In M1 the list is informational: every keyboard is locked (ADR 0004).
+//! The list is informational: every keyboard is locked, nothing else yet (ADR 0004). What counts
+//! as a keyboard, mouse or touchpad, and how far KeyClean controls it, is decided in
+//! `keyclean_core::devices`.
 
 use std::mem::size_of;
 
+use keyclean_core::devices::{InputDevice, RawDevice, RawKind, build_list};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_DevNode_PropertyW, CM_Get_Device_Interface_PropertyW, CM_LOCATE_DEVNODE_NORMAL,
-    CM_Locate_DevNodeW, CR_BUFFER_SMALL, CR_SUCCESS,
+    CM_Get_DevNode_PropertyW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent,
+    CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CR_BUFFER_SMALL, CR_SUCCESS,
 };
 use windows::Win32::Devices::Properties::{
     DEVPKEY_Device_FriendlyName, DEVPKEY_Device_InstanceId, DEVPKEY_NAME, DEVPROP_TYPE_STRING,
@@ -16,36 +19,74 @@ use windows::Win32::Devices::Properties::{
 };
 use windows::Win32::Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE};
 use windows::Win32::UI::Input::{
-    GetRawInputDeviceInfoW, GetRawInputDeviceList, RAWINPUTDEVICELIST, RIDI_DEVICENAME,
-    RIM_TYPEKEYBOARD,
+    GetRawInputDeviceInfoW, GetRawInputDeviceList, RAWINPUTDEVICELIST, RID_DEVICE_INFO,
+    RIDI_DEVICEINFO, RIDI_DEVICENAME, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 };
 use windows::core::PCWSTR;
 
 use crate::error::EngineError;
 
-/// A connected keyboard. Contains no input data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeyboardDevice {
-    /// The Raw Input device interface path; stable while the device stays connected.
-    pub id: String,
-    /// The name Windows shows for the device, when it has one.
-    pub name: Option<String>,
-}
-
-/// Lists the connected keyboards.
-pub fn keyboards() -> Result<Vec<KeyboardDevice>, EngineError> {
-    let mut keyboards = Vec::new();
+/// Lists the connected keyboards, mice, touchpads and other pointing devices KeyClean knows about
+/// (see `keyclean_core::devices`). Registers for no input.
+pub fn input_devices() -> Result<Vec<InputDevice>, EngineError> {
+    let mut raw = Vec::new();
     for device in raw_input_devices()? {
-        if device.dwType != RIM_TYPEKEYBOARD {
+        let Some(kind) = raw_kind(device.hDevice, device.dwType) else {
             continue;
-        }
+        };
         let Some(id) = device_path(device.hDevice) else {
             continue;
         };
-        let name = friendly_name(&id);
-        keyboards.push(KeyboardDevice { id, name });
+        let devnode = locate_devnode(&id);
+        raw.push(RawDevice {
+            name: devnode.and_then(friendly_name),
+            group: devnode.and_then(parent_devnode).map(u64::from),
+            id,
+            kind,
+        });
     }
-    Ok(keyboards)
+    Ok(build_list(raw))
+}
+
+/// What Raw Input says a device is. HID devices that aren't keyboards or mice need their usage
+/// from `RIDI_DEVICEINFO`; if that can't be read the device is skipped.
+fn raw_kind(
+    device: HANDLE,
+    device_type: windows::Win32::UI::Input::RID_DEVICE_INFO_TYPE,
+) -> Option<RawKind> {
+    if device_type == RIM_TYPEKEYBOARD {
+        return Some(RawKind::Keyboard);
+    }
+    if device_type == RIM_TYPEMOUSE {
+        return Some(RawKind::Mouse);
+    }
+    if device_type != RIM_TYPEHID {
+        return None;
+    }
+    let mut info = RID_DEVICE_INFO {
+        cbSize: size_of::<RID_DEVICE_INFO>() as u32,
+        ..Default::default()
+    };
+    let mut size = info.cbSize;
+    // SAFETY: `info` is a RID_DEVICE_INFO whose cbSize is set, and `size` is its size in bytes, as
+    // RIDI_DEVICEINFO requires.
+    let copied = unsafe {
+        GetRawInputDeviceInfoW(
+            Some(device),
+            RIDI_DEVICEINFO,
+            Some((&raw mut info).cast()),
+            &mut size,
+        )
+    };
+    if copied == u32::MAX || copied == 0 {
+        return None;
+    }
+    // SAFETY: dwType is RIM_TYPEHID, so the `hid` member of the union is the one Windows filled in.
+    let hid = unsafe { info.Anonymous.hid };
+    Some(RawKind::Hid {
+        usage_page: hid.usUsagePage,
+        usage: hid.usUsage,
+    })
 }
 
 pub(crate) fn raw_input_devices() -> Result<Vec<RAWINPUTDEVICELIST>, EngineError> {
@@ -114,7 +155,8 @@ fn device_path(device: HANDLE) -> Option<String> {
     Some(utf16_until_nul(&buffer))
 }
 
-fn friendly_name(interface_path: &str) -> Option<String> {
+/// The configuration-manager device node behind a Raw Input interface path.
+fn locate_devnode(interface_path: &str) -> Option<u32> {
     let path = to_wide(interface_path);
     let instance_id = interface_string_property(&path, &DEVPKEY_Device_InstanceId)?;
     let instance_id = to_wide(&instance_id);
@@ -128,11 +170,20 @@ fn friendly_name(interface_path: &str) -> Option<String> {
             CM_LOCATE_DEVNODE_NORMAL,
         )
     };
-    if located != CR_SUCCESS {
-        return None;
-    }
+    (located == CR_SUCCESS).then_some(devinst)
+}
+
+fn friendly_name(devinst: u32) -> Option<String> {
     devnode_string_property(devinst, &DEVPKEY_Device_FriendlyName)
         .or_else(|| devnode_string_property(devinst, &DEVPKEY_NAME))
+}
+
+/// The parent device node. Collections of one HID device (a touchpad and its companion mouse)
+/// share it.
+fn parent_devnode(devinst: u32) -> Option<u32> {
+    let mut parent = 0u32;
+    // SAFETY: `devinst` came from CM_Locate_DevNodeW and `parent` is writable.
+    (unsafe { CM_Get_Parent(&mut parent, devinst, 0) } == CR_SUCCESS).then_some(parent)
 }
 
 fn interface_string_property(path: &[u16], key: &DEVPROPKEY) -> Option<String> {
@@ -212,9 +263,9 @@ mod tests {
     }
 
     #[test]
-    fn listing_keyboards_does_not_fail() {
+    fn listing_devices_does_not_fail() {
         // Read-only enumeration; installs nothing and registers for no input.
-        let result = keyboards();
+        let result = input_devices();
         assert!(result.is_ok(), "{result:?}");
     }
 }

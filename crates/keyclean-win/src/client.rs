@@ -19,7 +19,6 @@ use keyclean_core::policy::SafetyProfile;
 use keyclean_core::session::{EndReason, SessionState};
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
-use crate::devices::{self, KeyboardDevice};
 use crate::engine::{EngineEvent, EngineStatus, LockRequest, safety_profile};
 use crate::error::EngineError;
 use crate::host::{ENGINE_FLAG, PARENT_FLAG};
@@ -119,12 +118,6 @@ impl EngineClient {
     /// Asks the engine to end the current session (`EndReason::UserRequest`).
     pub fn unlock(&self) -> Result<(), EngineError> {
         self.send(WireCommand::Unlock)
-    }
-
-    /// Lists connected keyboards (name and id only). Runs in the app process: enumeration
-    /// installs no hook.
-    pub fn devices(&self) -> Result<Vec<KeyboardDevice>, EngineError> {
-        devices::keyboards()
     }
 
     fn send(&self, command: WireCommand) -> Result<(), EngineError> {

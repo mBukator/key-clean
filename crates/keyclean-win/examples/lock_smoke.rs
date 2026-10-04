@@ -24,16 +24,21 @@ fn main() {
         }
     };
 
-    match engine.devices() {
-        Ok(keyboards) if keyboards.is_empty() => println!("No keyboards detected."),
-        Ok(keyboards) => {
-            println!("Detected keyboards:");
-            for k in keyboards {
-                println!("  - {}", k.name.as_deref().unwrap_or("(unnamed keyboard)"));
-                println!("    {}", k.id);
+    match keyclean_win::input_devices() {
+        Ok(devices) if devices.is_empty() => println!("No input devices detected."),
+        Ok(devices) => {
+            println!("Detected input devices (every keyboard is locked; nothing else is):");
+            for d in devices {
+                println!(
+                    "  - {:?}, {:?}: {}",
+                    d.kind,
+                    d.capability,
+                    d.name.as_deref().unwrap_or("(unnamed)")
+                );
+                println!("    {}", d.id);
             }
         }
-        Err(e) => println!("Could not list keyboards: {}", e.details()),
+        Err(e) => println!("Could not list devices: {}", e.details()),
     }
 
     for n in (1..=3).rev() {
