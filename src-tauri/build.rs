@@ -7,7 +7,7 @@ fn main() {
             "unlock_keyboard",
             "get_lock_options",
             "get_status",
-            "list_keyboards",
+            "list_devices",
         ]));
     if let Err(e) = tauri_build::try_build(attributes) {
         panic!("tauri build script failed: {e:#}");

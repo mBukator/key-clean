@@ -209,10 +209,23 @@ pub fn session_lock_scenario() -> Scenario {
 // In-process engine scenarios
 // ---------------------------------------------------------------------------------------------
 
-fn keyboards(ctx: &mut Ctx<'_>) -> Outcome {
-    match ctx.rig.engine().devices() {
-        Ok(list) if !list.is_empty() => Outcome::Pass(format!("{} keyboard(s) listed", list.len())),
-        Ok(_) => Outcome::Fail("no keyboards listed".into()),
+fn keyboards(_ctx: &mut Ctx<'_>) -> Outcome {
+    use keyclean_win::keyclean_core::devices::DeviceKind;
+    match keyclean_win::input_devices() {
+        Ok(list) => {
+            let keyboards = list
+                .iter()
+                .filter(|d| d.kind == DeviceKind::Keyboard)
+                .count();
+            if keyboards == 0 {
+                Outcome::Fail("no keyboards listed".into())
+            } else {
+                Outcome::Pass(format!(
+                    "{keyboards} keyboard(s) among {} device(s) listed",
+                    list.len()
+                ))
+            }
+        }
         Err(e) => Outcome::Fail(e.details()),
     }
 }
@@ -1147,11 +1160,22 @@ fn install_fails(ctx: &mut Ctx<'_>) -> Outcome {
     result.into()
 }
 
-/// S22: the engine registers Raw Input only during a session (invariant 4).
+/// S22: the engine registers Raw Input only during a session (invariant 4). The device watch the
+/// app runs at idle (ADR 0012) is running too: it must not count as an input registration.
 fn idle_registration(ctx: &mut Ctx<'_>) -> Outcome {
     ctx.rig.ensure_idle();
-    expect_no_raw_input_registration()
-        .map(|()| "GetRegisteredRawInputDevices reports none after every session".to_string())
+    let (changed, _unused) = std::sync::mpsc::channel();
+    let watch = match keyclean_win::DeviceWatch::start(changed) {
+        Ok(watch) => watch,
+        Err(e) => return Outcome::Fail(format!("device watch didn't start: {}", e.details())),
+    };
+    let result = expect_no_raw_input_registration();
+    drop(watch);
+    result
+        .map(|()| {
+            "GetRegisteredRawInputDevices reports none after every session and with the device watch running"
+                .to_string()
+        })
         .into()
 }
 

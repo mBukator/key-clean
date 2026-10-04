@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod bridge;
+mod devices;
 // Used by the tray and notifications once they land.
 #[allow(dead_code)]
 mod i18n;
@@ -24,7 +25,8 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{EngineClient, EngineError, EngineEvent, LockRequest, safety_profile};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
-use bridge::{ErrorDto, KeyboardDto, LockOptionsDto, STATUS_EVENT, StatusDto};
+use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
+use devices::DeviceStore;
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
 const RELAY_DRAIN: Duration = Duration::from_secs(1);
@@ -94,15 +96,11 @@ fn get_status(store: State<'_, StatusStore>) -> StatusDto {
     guard(&store.0).clone()
 }
 
+/// The current device list. Updates arrive as `devices-changed` events; a window subscribes first,
+/// then calls this, so it can't miss one.
 #[tauri::command]
-fn list_keyboards(engine: State<'_, EngineSlot>) -> Result<Vec<KeyboardDto>, ErrorDto> {
-    match guard(&engine.0).as_ref() {
-        Some(engine) => engine
-            .devices()
-            .map(|list| list.into_iter().map(KeyboardDto::from).collect())
-            .map_err(|e| ErrorDto::from(&e)),
-        None => Err(ErrorDto::from(&EngineError::NotRunning)),
-    }
+fn list_devices(devices: State<'_, DeviceStore>) -> DevicesDto {
+    devices.snapshot()
 }
 
 fn start_engine(app: &AppHandle) {
@@ -311,6 +309,7 @@ pub fn run() {
             let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
             eprintln!("[keyclean] close guard: {guarded} helper windows");
             start_engine(app.handle());
+            devices::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -318,13 +317,14 @@ pub fn run() {
             unlock_keyboard,
             get_lock_options,
             get_status,
-            list_keyboards
+            list_devices
         ])
         .build(tauri::generate_context!());
 
     match app {
         Ok(app) => app.run(|handle, event| {
             if let RunEvent::Exit = event {
+                devices::stop(handle);
                 stop_engine(handle);
             }
         }),

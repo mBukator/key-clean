@@ -47,6 +47,12 @@ pub enum EngineError {
         /// Windows' message for it.
         message: String,
     },
+    /// Device connection notifications couldn't be registered, so the device list won't update by
+    /// itself.
+    DeviceWatch {
+        /// The configuration manager's CR_ code.
+        code: i32,
+    },
     /// The engine process (ADR 0009) couldn't be started, didn't answer, or stopped.
     EngineProcess(String),
     /// An error reported by the engine process, carried over the wire as its message key and
@@ -95,6 +101,7 @@ impl EngineError {
                 "error.engine_failed"
             }
             EngineError::DeviceQuery { .. } => "error.devices",
+            EngineError::DeviceWatch { .. } => "error.device_watch",
             EngineError::Remote { message_key, .. } => message_key,
         }
     }
@@ -122,6 +129,9 @@ impl EngineError {
             EngineError::WindowDestroyed => "the engine's hidden window was destroyed".into(),
             EngineError::DeviceQuery { code, message } => {
                 format!("device enumeration failed: {code:#010X}: {message}")
+            }
+            EngineError::DeviceWatch { code } => {
+                format!("CM_Register_Notification failed: CR code {code:#06X}")
             }
             EngineError::EngineProcess(e) => format!("engine process: {e}"),
             EngineError::Remote { details, .. } => details.clone(),

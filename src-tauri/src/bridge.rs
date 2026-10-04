@@ -1,14 +1,17 @@
 //! Data sent to the webview. Mirrors `src/shared/types/engine.ts`. Contains no key data.
 
+use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
-    DeviceChange, EndReason, EngineError, EngineEvent, EngineNotice, KeyboardDevice, SessionState,
-    SystemTransition,
+    DeviceChange, EndReason, EngineError, EngineEvent, EngineNotice, SessionState, SystemTransition,
 };
 use serde::Serialize;
 
 /// Name of the event emitted to the main window on every status change.
 pub const STATUS_EVENT: &str = "engine-status";
+
+/// Name of the event emitted to the main window when the device list changes.
+pub const DEVICES_EVENT: &str = "devices-changed";
 
 /// A plain-language error (by string key) plus technical details (§46).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -50,8 +53,6 @@ pub struct StatusDto {
     countdown_secs: Option<u64>,
     /// The latest notice to show (a string key), until the next lock starts.
     notice: Option<&'static str>,
-    /// Counts keyboard connects and disconnects, so the window knows to list keyboards again.
-    device_changes: u64,
 }
 
 impl StatusDto {
@@ -65,7 +66,6 @@ impl StatusDto {
             engine_available: false,
             countdown_secs: None,
             notice: None,
-            device_changes: 0,
         }
     }
 
@@ -120,7 +120,6 @@ impl StatusDto {
                     DeviceChange::Arrived => "notice.keyboard_connected",
                     DeviceChange::Removed => "notice.keyboard_disconnected",
                 });
-                self.device_changes = self.device_changes.wrapping_add(1);
             }
         }
     }
@@ -147,21 +146,44 @@ impl LockOptionsDto {
     }
 }
 
-/// A keyboard for the device list.
+/// An input device for the device list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KeyboardDto {
+pub struct DeviceDto {
     id: String,
-    name: Option<String>,
+    pub name: Option<String>,
+    kind: &'static str,
+    capability: &'static str,
 }
 
-impl From<KeyboardDevice> for KeyboardDto {
-    fn from(k: KeyboardDevice) -> Self {
-        KeyboardDto {
-            id: k.id,
-            name: k.name,
+impl From<InputDevice> for DeviceDto {
+    fn from(d: InputDevice) -> Self {
+        DeviceDto {
+            id: d.id,
+            name: d.name,
+            kind: match d.kind {
+                DeviceKind::Keyboard => "keyboard",
+                DeviceKind::Mouse => "mouse",
+                DeviceKind::Touchpad => "touchpad",
+                DeviceKind::Touchscreen => "touchscreen",
+                DeviceKind::Pen => "pen",
+            },
+            capability: match d.capability {
+                Capability::Supported => "supported",
+                Capability::Limited => "limited",
+                Capability::Unsupported => "unsupported",
+            },
         }
     }
+}
+
+/// The device list, with the reason it may be incomplete or stale.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevicesDto {
+    pub devices: Vec<DeviceDto>,
+    /// Set when listing failed (the old list is kept) or when the list can't update by itself.
+    pub error: Option<ErrorDto>,
 }
 
 fn state_name(state: SessionState) -> &'static str {
@@ -386,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn device_changes_set_a_notice_and_count() {
+    fn device_changes_during_a_lock_set_a_notice() {
         let mut dto = StatusDto::initial(true);
         dto.apply(&status(SessionState::Locked));
         dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed));
@@ -394,7 +416,6 @@ mod tests {
         dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived));
         assert_eq!(dto.notice, Some("notice.keyboard_connected"));
         let json = serde_json::to_value(&dto).unwrap();
-        assert_eq!(json["deviceChanges"], 2);
         assert_eq!(json["notice"], "notice.keyboard_connected");
     }
 

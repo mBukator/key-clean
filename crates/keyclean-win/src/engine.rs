@@ -61,7 +61,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::w;
 
-use crate::devices::{self, KeyboardDevice};
+use crate::devices;
 use crate::error::EngineError;
 use crate::msg::{
     TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_HOOK_CHECK, TIMER_SESSION, WM_COMMANDS_READY,
@@ -293,11 +293,6 @@ impl Engine {
     /// Asks the engine to end the current session (`EndReason::UserRequest`).
     pub fn unlock(&self) -> Result<(), EngineError> {
         self.send(Command::Unlock)
-    }
-
-    /// Lists connected keyboards (name and id only).
-    pub fn devices(&self) -> Result<Vec<KeyboardDevice>, EngineError> {
-        devices::keyboards()
     }
 
     /// Releases any lock and stops the engine. Same as dropping it.
