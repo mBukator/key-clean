@@ -64,6 +64,10 @@ pub struct RawDevice {
     /// Identifies the parent device node. Entries with the same group are collections of one HID
     /// device (for example a touchpad and its optional companion mouse collection).
     pub group: Option<u64>,
+    /// Identifies the physical device (its container) for devices that aren't built into the
+    /// machine. `None` for built-in devices and when it can't be read. Entries of the same kind in
+    /// one container are interfaces of one device.
+    pub container: Option<String>,
 }
 
 /// A device in the list shown to the user.
@@ -105,11 +109,16 @@ pub fn classify(kind: RawKind) -> Option<(DeviceKind, Capability)> {
     }
 }
 
-/// Turns raw entries into the list to show: classified, with the companion mouse collection of a
-/// touchpad, touchscreen or pen folded into it, and in a stable order (by kind, then name, then id).
+/// Turns raw entries into the list to show: classified, with duplicates of one physical device
+/// folded, and in a stable order (by kind, then name, then id).
 ///
-/// Only that case is folded. Entries are never merged by name or by container: devices built into
-/// a machine can share a container, and two real devices must not become one row.
+/// Two things are folded:
+/// - the companion mouse collection of a touchpad, touchscreen or pen (same parent device node);
+/// - entries of the same kind in the same external container: one USB keyboard that exposes two
+///   keyboard interfaces is one row. Built-in devices have no container here, so two of them are
+///   never merged, however alike they look.
+///
+/// Entries are never merged by name.
 pub fn build_list(raw: Vec<RawDevice>) -> Vec<InputDevice> {
     let digitizer_groups: Vec<u64> = raw
         .iter()
@@ -125,20 +134,49 @@ pub fn build_list(raw: Vec<RawDevice>) -> Vec<InputDevice> {
         .filter_map(|d| d.group)
         .collect();
 
-    let mut list: Vec<InputDevice> = raw
+    let mut entries: Vec<(InputDevice, Option<String>)> = raw
         .into_iter()
         .filter_map(|device| {
             let (kind, capability) = classify(device.kind)?;
             let companion_mouse = kind == DeviceKind::Mouse
                 && device.group.is_some_and(|g| digitizer_groups.contains(&g));
-            (!companion_mouse).then_some(InputDevice {
-                id: device.id,
-                name: device.name,
-                kind,
-                capability,
-            })
+            (!companion_mouse).then_some((
+                InputDevice {
+                    id: device.id,
+                    name: device.name,
+                    kind,
+                    capability,
+                },
+                device.container,
+            ))
         })
         .collect();
+
+    // The entry with the lowest id represents its container, so the choice doesn't depend on the
+    // order Windows lists devices in. A name found on another entry fills in a missing one.
+    entries.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+    let mut list: Vec<InputDevice> = Vec::with_capacity(entries.len());
+    let mut seen: Vec<(String, DeviceKind, usize)> = Vec::new();
+    for (device, container) in entries {
+        let Some(container) = container else {
+            list.push(device);
+            continue;
+        };
+        match seen
+            .iter()
+            .find(|(c, kind, _)| *c == container && *kind == device.kind)
+        {
+            Some(&(_, _, index)) => {
+                if list[index].name.is_none() {
+                    list[index].name = device.name;
+                }
+            }
+            None => {
+                seen.push((container, device.kind, list.len()));
+                list.push(device);
+            }
+        }
+    }
     list.sort_by_cached_key(|d| {
         (
             d.kind,
@@ -163,7 +201,13 @@ mod tests {
             name: name.map(str::to_owned),
             kind,
             group,
+            container: None,
         }
+    }
+
+    fn in_container(mut device: RawDevice, container: &str) -> RawDevice {
+        device.container = Some(container.to_owned());
+        device
     }
 
     #[test]
@@ -255,13 +299,57 @@ mod tests {
     }
 
     #[test]
-    fn identical_devices_are_never_merged() {
-        // Two keyboards with the same name and the same group (e.g. both reported by one parent).
+    fn built_in_devices_are_never_merged() {
+        // Same name, kind and group, but no container: two real devices must stay two rows.
         let list = build_list(vec![
             raw("a", Some("HID Keyboard Device"), RawKind::Keyboard, Some(1)),
             raw("b", Some("HID Keyboard Device"), RawKind::Keyboard, Some(1)),
         ]);
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn interfaces_of_one_external_device_become_one_row_per_kind() {
+        // A USB keyboard with two keyboard interfaces and a mouse interface (one container).
+        let list = build_list(vec![
+            in_container(raw("kb2", Some("Board"), RawKind::Keyboard, Some(3)), "C1"),
+            in_container(raw("mouse", Some("Board"), RawKind::Mouse, Some(2)), "C1"),
+            in_container(raw("kb1", Some("Board"), RawKind::Keyboard, Some(1)), "C1"),
+        ]);
+        let rows: Vec<_> = list.iter().map(|d| (d.kind, d.id.as_str())).collect();
+        assert_eq!(
+            rows,
+            [(DeviceKind::Keyboard, "kb1"), (DeviceKind::Mouse, "mouse")]
+        );
+    }
+
+    #[test]
+    fn different_containers_are_not_merged() {
+        let list = build_list(vec![
+            in_container(raw("a", Some("Board"), RawKind::Keyboard, None), "C1"),
+            in_container(raw("b", Some("Board"), RawKind::Keyboard, None), "C2"),
+        ]);
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn a_folded_row_takes_a_name_from_its_siblings() {
+        let list = build_list(vec![
+            in_container(raw("a", None, RawKind::Keyboard, None), "C1"),
+            in_container(raw("b", Some("Board"), RawKind::Keyboard, None), "C1"),
+        ]);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name.as_deref(), Some("Board"));
+    }
+
+    #[test]
+    fn the_representative_does_not_depend_on_listing_order() {
+        let a = in_container(raw("a", Some("Board"), RawKind::Keyboard, None), "C1");
+        let b = in_container(raw("b", Some("Board"), RawKind::Keyboard, None), "C1");
+        let forward = build_list(vec![a.clone(), b.clone()]);
+        let backward = build_list(vec![b, a]);
+        assert_eq!(forward, backward);
+        assert_eq!(forward[0].id, "a");
     }
 
     #[test]

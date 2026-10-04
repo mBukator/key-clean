@@ -14,8 +14,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CR_BUFFER_SMALL, CR_SUCCESS,
 };
 use windows::Win32::Devices::Properties::{
-    DEVPKEY_Device_FriendlyName, DEVPKEY_Device_InstanceId, DEVPKEY_NAME, DEVPROP_TYPE_STRING,
-    DEVPROPTYPE,
+    DEVPKEY_Device_BusReportedDeviceDesc, DEVPKEY_Device_ContainerId, DEVPKEY_Device_FriendlyName,
+    DEVPKEY_Device_InLocalMachineContainer, DEVPKEY_Device_InstanceId, DEVPKEY_NAME,
+    DEVPROP_TYPE_BOOLEAN, DEVPROP_TYPE_GUID, DEVPROP_TYPE_STRING, DEVPROPTYPE,
 };
 use windows::Win32::Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE};
 use windows::Win32::UI::Input::{
@@ -38,9 +39,19 @@ pub fn input_devices() -> Result<Vec<InputDevice>, EngineError> {
             continue;
         };
         let devnode = locate_devnode(&id);
+        let container = devnode.and_then(external_container);
+        // An external device is better described by the name its bus reports ("HyperX Alloy
+        // Origins") than by the generic class name ("HID Keyboard Device").
+        let name = devnode.and_then(|devnode| {
+            container
+                .as_deref()
+                .and_then(|container| product_name(devnode, container))
+                .or_else(|| friendly_name(devnode))
+        });
         raw.push(RawDevice {
-            name: devnode.and_then(friendly_name),
+            name,
             group: devnode.and_then(parent_devnode).map(u64::from),
+            container,
             id,
             kind,
         });
@@ -178,6 +189,44 @@ fn friendly_name(devinst: u32) -> Option<String> {
         .or_else(|| devnode_string_property(devinst, &DEVPKEY_NAME))
 }
 
+/// The container (physical device) of a device that isn't built into this machine, as text.
+/// Built-in devices all share one machine container, which says nothing about which are the same
+/// device, so they get `None`. [tested] `DEVPKEY_Device_InLocalMachineContainer` is false for USB
+/// devices and true for the internal keyboard and touchpad on Max's machine.
+fn external_container(devinst: u32) -> Option<String> {
+    let in_machine = devnode_bytes(
+        devinst,
+        &DEVPKEY_Device_InLocalMachineContainer,
+        DEVPROP_TYPE_BOOLEAN,
+    )?;
+    if in_machine.first() != Some(&0) {
+        return None;
+    }
+    let id = devnode_bytes(devinst, &DEVPKEY_Device_ContainerId, DEVPROP_TYPE_GUID)?;
+    Some(id.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The product name the bus reported for the device or an ancestor in the same container (for a
+/// USB keyboard: the composite device above its interfaces). A hub or controller above it has a
+/// different container, so its name is never used.
+fn product_name(devinst: u32, container: &str) -> Option<String> {
+    let mut node = devinst;
+    for _ in 0..4 {
+        let same_container = devnode_bytes(node, &DEVPKEY_Device_ContainerId, DEVPROP_TYPE_GUID)
+            .is_some_and(|id| {
+                id.iter().map(|b| format!("{b:02x}")).collect::<String>() == container
+            });
+        if !same_container {
+            return None;
+        }
+        if let Some(name) = devnode_string_property(node, &DEVPKEY_Device_BusReportedDeviceDesc) {
+            return Some(name);
+        }
+        node = parent_devnode(node)?;
+    }
+    None
+}
+
 /// The parent device node. Collections of one HID device (a touchpad and its companion mouse)
 /// share it.
 fn parent_devnode(devinst: u32) -> Option<u32> {
@@ -187,37 +236,41 @@ fn parent_devnode(devinst: u32) -> Option<u32> {
 }
 
 fn interface_string_property(path: &[u16], key: &DEVPROPKEY) -> Option<String> {
-    read_string_property(|prop_type, buffer, size| {
-        // SAFETY: `path` is NUL-terminated; the buffer/size pair comes from `read_string_property`
-        // and describes valid writable memory (or a size query when the buffer is None).
-        unsafe {
-            CM_Get_Device_Interface_PropertyW(
-                PCWSTR(path.as_ptr()),
-                key,
-                prop_type,
-                buffer,
-                size,
-                0,
-            )
-        }
-    })
+    let bytes = read_property_bytes(
+        |prop_type, buffer, size| {
+            // SAFETY: `path` is NUL-terminated; the buffer/size pair comes from
+            // `read_property_bytes` and describes valid writable memory (or a size query when the
+            // buffer is None).
+            unsafe {
+                CM_Get_Device_Interface_PropertyW(
+                    PCWSTR(path.as_ptr()),
+                    key,
+                    prop_type,
+                    buffer,
+                    size,
+                    0,
+                )
+            }
+        },
+        DEVPROP_TYPE_STRING,
+    )?;
+    string_from_bytes(&bytes)
 }
 
 fn devnode_string_property(devinst: u32, key: &DEVPROPKEY) -> Option<String> {
-    read_string_property(|prop_type, buffer, size| {
-        // SAFETY: as above; `devinst` came from CM_Locate_DevNodeW.
-        unsafe { CM_Get_DevNode_PropertyW(devinst, key, prop_type, buffer, size, 0) }
-    })
+    string_from_bytes(&devnode_bytes(devinst, key, DEVPROP_TYPE_STRING)?)
 }
 
-/// Runs the configuration manager's two-call pattern for a string property.
-fn read_string_property(
+/// Runs the configuration manager's two-call pattern for a property of the expected type and
+/// returns its bytes.
+fn read_property_bytes(
     mut query: impl FnMut(
         *mut DEVPROPTYPE,
         Option<*mut u8>,
         *mut u32,
     ) -> windows::Win32::Devices::DeviceAndDriverInstallation::CONFIGRET,
-) -> Option<String> {
+    expected: DEVPROPTYPE,
+) -> Option<Vec<u8>> {
     let mut prop_type = DEVPROPTYPE::default();
     let mut size = 0u32;
     let first = query(&mut prop_type, None, &mut size);
@@ -226,10 +279,29 @@ fn read_string_property(
     }
     let mut buffer = vec![0u8; size as usize];
     if query(&mut prop_type, Some(buffer.as_mut_ptr()), &mut size) != CR_SUCCESS
-        || prop_type != DEVPROP_TYPE_STRING
+        || prop_type != expected
     {
         return None;
     }
+    buffer.truncate(size as usize);
+    Some(buffer)
+}
+
+/// A property of a device node, as bytes, if it has one of the expected type.
+fn devnode_bytes(devinst: u32, key: &DEVPROPKEY, expected: DEVPROPTYPE) -> Option<Vec<u8>> {
+    read_property_bytes(
+        |prop_type, buffer, size| {
+            // SAFETY: the buffer/size pair comes from `read_property_bytes` and describes valid
+            // writable memory (or a size query when the buffer is None); `devinst` came from
+            // CM_Locate_DevNodeW or CM_Get_Parent.
+            unsafe { CM_Get_DevNode_PropertyW(devinst, key, prop_type, buffer, size, 0) }
+        },
+        expected,
+    )
+}
+
+/// Decodes a string property: trimmed, and `None` when empty.
+fn string_from_bytes(buffer: &[u8]) -> Option<String> {
     let units: Vec<u16> = buffer
         .as_chunks::<2>()
         .0
@@ -260,6 +332,16 @@ mod tests {
         assert_eq!(wide.last(), Some(&0));
         assert_eq!(utf16_until_nul(&wide), "HID Keyboard Device");
         assert_eq!(utf16_until_nul(&[0x41, 0x42]), "AB");
+    }
+
+    /// Diagnostic: prints the list as the window would show it. Read-only (no hook, no input
+    /// registration). Run: `cargo test -p keyclean-win print_devices -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "diagnostic output"]
+    fn print_devices() {
+        for d in input_devices().unwrap() {
+            println!("{:?} {:?} {:?}: {}", d.kind, d.capability, d.name, d.id);
+        }
     }
 
     #[test]
