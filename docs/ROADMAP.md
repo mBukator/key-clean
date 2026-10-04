@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | not started                                 |
-| M4 Device detection                            | §52 Phase 1 | not started                                 |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                           |
+| ---------------------------------------------- | ----------- | ------------------------------------------------ |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                         |
+| M3 Safety hardening                            | §53 Phase 2 | **code-complete - awaiting manual verification** |
+| M4 Device detection                            | §52 Phase 1 | not started                                      |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
+| M8 System tray                                 | §55 Phase 4 | not started                                      |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
+| M11 Packaging                                  | §55 Phase 4 | not started                                      |
+| M12 Open-source release                        | §56 Phase 5 | not started                                      |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
 
 ---
 
@@ -136,7 +136,27 @@ Acceptance (§60 "Timer"):
 
 ### M3 - Safety hardening
 
-Status: not started. Manual test: `docs/testing/manual/M3.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S17-S23, plus `--stall` for S20) and Parts B and C of `docs/testing/manual/M3.md`.
+
+Done in code:
+
+- **Lost-hook check (ADR 0010).** During a session only, a Raw Input sink on the engine window
+  (`RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`) is compared with the hook's last-callback time. A lost hook
+  ends the lock with `error.hook_lost`.
+- **Admin windows.** When an elevated window has focus, the lock stays on with a warning (Max's
+  decision, 2026-10-04).
+- **Keyboard notices.** Connecting or disconnecting a keyboard during a lock shows a notice and
+  re-lists keyboards. The lock continues (ADR 0004).
+- **Engine restart (ADR 0011).** A dead engine process is restarted idle, at most 3 times in 5
+  minutes.
+- **Clean `taskkill`.** `taskkill` without `/F` now exits the app cleanly: tao's and the
+  single-instance plugin's helper windows are subclassed so `WM_CLOSE` means "exit".
+- **Fault injection.** Testkit faults for a lost hook, a failed install, a hung engine thread and a
+  real hook timeout.
+- **Verification only.** Shutdown, restart, sign-out, switch user, sleep, clock changes and drift
+  needed no new code. Each has a manual step.
+- **Research.** `docs/research/m3-safety.md`.
 
 Scope: silent hook removal detection (Raw Input sink compared with the hook's last callback, Max's
 decision to defer from M1); sleep/wake, shutdown, restart and session switch tested end to end; device
@@ -169,6 +189,9 @@ every keyboard is locked.
 Acceptance:
 
 - [ ] Connected devices are listed with friendly names
+      (note: M3's device notifications only exist during a lock, because Raw Input is registered
+      only then; a live list at idle needs a mechanism that registers for no input, e.g.
+      `CM_Register_Notification` for the keyboard interface class)
 - [ ] Plugging and unplugging updates the list without restarting
 - [ ] Each device shows Supported / Limited / Unsupported
 - [ ] Idle KeyClean still registers for no input (invariant 4)

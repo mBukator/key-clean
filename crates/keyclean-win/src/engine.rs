@@ -16,6 +16,14 @@
 //! - the emergency chord, detected inside the hook → `Emergency`;
 //! - system transitions (suspend, end of session, workstation lock, disconnect);
 //! - process exit, after which Windows removes the hook.
+//!
+//! Hook-liveness check: during a lock the engine window is also registered for keyboard Raw Input
+//! (`raw_input`). A `WM_INPUT` arms a short timer; when it fires, the hook must have been called
+//! around the same time (`keyclean_core::liveness`), or the lock ends with `HookLost` (Windows
+//! removed or skipped the hook). Keys typed into an elevated window never reach the hook (UIPI), so
+//! that case keeps the lock and warns once instead. `WM_INPUT` is counted, never read.
+//!
+//! The same registration reports keyboards connected or disconnected during a lock.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +34,7 @@ use std::time::{Duration, Instant};
 
 use keyclean_core::countdown;
 use keyclean_core::keystate::Phase;
+use keyclean_core::liveness::{self, LIVENESS_CHECK_DELAY};
 use keyclean_core::policy::{
     DEFAULT_MAX_LOCK, DRAIN_IDLE_TIMEOUT, DrainCheck, LockPlan, SafetyProfile, drain_check,
     plan_lock,
@@ -44,28 +53,37 @@ use windows::Win32::System::RemoteDesktop::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetMessageW, HHOOK, KillTimer, MSG, PBT_APMSUSPEND, PostMessageW, PostQuitMessage,
-    RegisterClassExW, SetTimer, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_POWERBROADCAST,
-    WM_QUERYENDSESSION, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPED, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
-    WTS_SESSION_LOGOFF,
+    GIDC_ARRIVAL, GIDC_REMOVAL, GetMessageW, HHOOK, KillTimer, MSG, PBT_APMSUSPEND, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SetTimer, WM_CLOSE, WM_DESTROY, WM_ENDSESSION, WM_INPUT,
+    WM_INPUT_DEVICE_CHANGE, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_TIMER, WM_WTSSESSION_CHANGE,
+    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT,
+    WTS_SESSION_LOCK, WTS_SESSION_LOGOFF,
 };
 use windows::core::w;
 
 use crate::devices::{self, KeyboardDevice};
 use crate::error::EngineError;
-use crate::hook;
 use crate::msg::{
-    TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_SESSION, WM_COMMANDS_READY, WM_HOOK_CHORD,
-    WM_HOOK_DEADLINE, WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
+    TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_HOOK_CHECK, TIMER_SESSION, WM_COMMANDS_READY,
+    WM_HOOK_CHORD, WM_HOOK_DEADLINE, WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
 };
 use crate::qpc::{self, QpcClock};
 use crate::watchdog::Watchdog;
+use crate::{foreground, hook, raw_input};
 
 /// How long `Engine::drop` waits for the engine thread to release input and exit.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 
 static ENGINE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Testkit only: makes the next hook installation fail without calling `SetWindowsHookExW`.
+#[cfg(feature = "testkit")]
+static TESTKIT_FAIL_NEXT_INSTALL: AtomicBool = AtomicBool::new(false);
+
+/// Testkit only: `WM_INPUT` messages received by the engine window (counted, never read).
+#[cfg(feature = "testkit")]
+pub(crate) static RAW_INPUT_SEEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// The safety profile this build enforces. Debug builds always use the development caps,
 /// whatever the caller wants (invariant 13).
@@ -121,6 +139,25 @@ pub enum EngineNotice {
     PowerNotificationUnavailable,
     /// Workstation lock/switch notifications couldn't be registered.
     SessionNotificationUnavailable,
+    /// Keyboard Raw Input couldn't be registered for this lock, so a hook Windows removes can't be
+    /// detected and device changes aren't reported. The lock continues.
+    LivenessCheckUnavailable,
+    /// The session's Raw Input registration couldn't be removed when it ended, so the engine may
+    /// still receive keyboard messages while idle (it never reads them; the registration ends with
+    /// the process).
+    RawInputNotRemoved,
+    /// Keys reached an elevated (administrator) window, which a user-mode hook can't block. The
+    /// lock continues for every other window. Sent at most once per lock.
+    ElevatedWindowBypass,
+}
+
+/// A keyboard connected or disconnected during a lock. Carries no device name or id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceChange {
+    /// A keyboard that wasn't connected when the lock began was connected. It is locked too.
+    Arrived,
+    /// A keyboard that was connected when the lock began was disconnected.
+    Removed,
 }
 
 /// Everything the engine reports. Contains no key data.
@@ -137,6 +174,8 @@ pub enum EngineEvent {
     Error(EngineError),
     /// A notice for session logs.
     Notice(EngineNotice),
+    /// A keyboard was connected or disconnected during a lock.
+    DeviceChanged(DeviceChange),
 }
 
 enum Command {
@@ -148,6 +187,12 @@ enum Command {
     },
     Unlock,
     Shutdown,
+    /// Testkit: unhook behind the engine's back (a deterministic silent hook removal).
+    #[cfg(feature = "testkit")]
+    DropHook,
+    /// Testkit: block the engine thread.
+    #[cfg(feature = "testkit")]
+    Hang(Duration),
 }
 
 /// Handle to the running engine. Dropping it releases any lock and stops the engine thread.
@@ -225,6 +270,26 @@ impl Engine {
         })
     }
 
+    /// Testkit only: the engine thread removes its hook without updating its own state, as
+    /// Windows does when a hook times out. In-process only; unreachable from the wire protocol.
+    #[cfg(feature = "testkit")]
+    pub fn testkit_drop_hook(&self) -> Result<(), EngineError> {
+        self.send(Command::DropHook)
+    }
+
+    /// Testkit only: the next lock fails to install its hook (`error.hook_install`).
+    #[cfg(feature = "testkit")]
+    pub fn testkit_fail_next_install(&self) {
+        TESTKIT_FAIL_NEXT_INSTALL.store(true, Ordering::Release);
+    }
+
+    /// Testkit only: the engine thread sleeps for `duration`, as if hung. Run it in a child
+    /// process: the watchdog may abort the process at the hard deadline.
+    #[cfg(feature = "testkit")]
+    pub fn testkit_hang(&self, duration: Duration) -> Result<(), EngineError> {
+        self.send(Command::Hang(duration))
+    }
+
     /// Asks the engine to end the current session (`EndReason::UserRequest`).
     pub fn unlock(&self) -> Result<(), EngineError> {
         self.send(Command::Unlock)
@@ -290,6 +355,14 @@ struct EngineState {
     drain_started_ticks: u64,
     /// The countdown second last reported while locked.
     last_countdown_secs: Option<u64>,
+    /// Whether keyboard Raw Input is registered (only during a lock).
+    raw_input_registered: bool,
+    /// QPC ticks of the `WM_INPUT` whose hook-liveness check is pending.
+    pending_raw_ticks: Option<u64>,
+    /// Whether `ElevatedWindowBypass` was already sent this lock.
+    elevated_notified: bool,
+    /// Raw Input handles of the keyboards known this lock (snapshot at lock start plus arrivals).
+    known_keyboards: Vec<isize>,
 }
 
 thread_local! {
@@ -350,6 +423,10 @@ fn engine_thread(
         session_notify,
         drain_started_ticks: 0,
         last_countdown_secs: None,
+        raw_input_registered: false,
+        pending_raw_ticks: None,
+        elevated_notified: false,
+        known_keyboards: Vec::new(),
     };
     let _ = STATE.try_with(|cell| *cell.borrow_mut() = Some(state));
     let _ = ready.send(Ok(hwnd.0 as isize));
@@ -378,6 +455,9 @@ fn engine_thread(
         .ok()
         .flatten();
     if let Some(state) = state {
+        if state.raw_input_registered {
+            let _ = raw_input::remove();
+        }
         if let Some(handle) = state.power_notify {
             // SAFETY: `handle` came from RegisterSuspendResumeNotification and is released once.
             let _ = unsafe { UnregisterSuspendResumeNotification(handle) };
@@ -455,6 +535,18 @@ fn with_state(f: impl FnOnce(&mut EngineState)) {
     }
 }
 
+/// Like [`with_state`], but does nothing if the state is unavailable. For informational messages
+/// (raw input, device changes) that must never change the lock.
+fn try_with_state(f: impl FnOnce(&mut EngineState)) {
+    let _ = STATE.try_with(|cell| {
+        if let Ok(mut guard) = cell.try_borrow_mut()
+            && let Some(state) = guard.as_mut()
+        {
+            f(state);
+        }
+    });
+}
+
 /// The hidden window's procedure.
 ///
 /// # Safety
@@ -485,8 +577,21 @@ unsafe extern "system" fn window_proc(
             TIMER_SESSION => with_state(EngineState::on_session_timer),
             TIMER_DRAIN => with_state(EngineState::on_drain_timeout),
             TIMER_COUNTDOWN => with_state(EngineState::on_countdown_timer),
+            TIMER_HOOK_CHECK => with_state(EngineState::on_hook_check),
             _ => {}
         },
+        WM_INPUT => {
+            // Counted, never read: no GetRawInputData, so no key data is touched.
+            #[cfg(feature = "testkit")]
+            RAW_INPUT_SEEN.fetch_add(1, Ordering::AcqRel);
+            try_with_state(EngineState::on_raw_input);
+            // The WM_INPUT docs require DefWindowProc so Windows can clean up.
+            // SAFETY: default handling with the original arguments.
+            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+        }
+        WM_INPUT_DEVICE_CHANGE => {
+            try_with_state(|s| s.on_device_change(wparam.0 as u32, lparam.0));
+        }
         WM_POWERBROADCAST => {
             if wparam.0 as u32 == PBT_APMSUSPEND {
                 with_state(|s| s.end_now(EndReason::SystemTransition(SystemTransition::Suspend)));
@@ -526,6 +631,18 @@ unsafe extern "system" fn window_proc(
         }
     }
     LRESULT(0)
+}
+
+/// Installs the keyboard hook. The testkit can make it fail without calling Windows.
+fn install_hook() -> Result<HHOOK, EngineError> {
+    #[cfg(feature = "testkit")]
+    if TESTKIT_FAIL_NEXT_INSTALL.swap(false, Ordering::AcqRel) {
+        return Err(EngineError::HookInstall {
+            code: 0,
+            message: "testkit: forced failure".into(),
+        });
+    }
+    hook::install().map_err(|e| EngineError::hook_install(&e))
 }
 
 fn millis(d: Duration) -> u32 {
@@ -574,6 +691,19 @@ impl EngineState {
                     // SAFETY: ends this thread's message loop.
                     unsafe { PostQuitMessage(0) };
                 }
+                #[cfg(feature = "testkit")]
+                Command::DropHook => {
+                    if let Some(handle) = self.hook {
+                        // SAFETY: `handle` came from `hook::install` on this thread. `self.hook`
+                        // keeps it on purpose, so `finish` later sees the unhook fail, as after a
+                        // real hook timeout.
+                        let _ = unsafe {
+                            windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(handle)
+                        };
+                    }
+                }
+                #[cfg(feature = "testkit")]
+                Command::Hang(duration) => std::thread::sleep(duration),
             }
         }
     }
@@ -591,6 +721,13 @@ impl EngineState {
             }
         };
 
+        // Snapshot the keyboards before the hook goes in, so device changes during the lock can be
+        // told apart from arrivals Windows may replay at registration. No names: those calls
+        // could be slow. On error, start empty rather than fail the lock.
+        self.known_keyboards = devices::keyboard_handles().unwrap_or_default();
+        self.pending_raw_ticks = None;
+        self.elevated_notified = false;
+
         // One QPC reading anchors the session (MonoTime) and the hook (ticks).
         let start_ticks = qpc::ticks();
         if self.session.start(plan, QpcClock::at(start_ticks)).is_err() {
@@ -604,13 +741,17 @@ impl EngineState {
         hook::begin_arming(self.generation, hard_ticks);
         self.watchdog_generation = Some(self.watchdog.arm(Instant::now() + plan.hard_deadline));
 
-        match hook::install() {
+        match install_hook() {
             Ok(handle) => self.hook = Some(handle),
             Err(e) => {
                 hook::clear();
-                self.fail(EngineError::hook_install(&e));
+                self.fail(e);
                 return;
             }
+        }
+        match raw_input::register(self.hwnd) {
+            Ok(()) => self.raw_input_registered = true,
+            Err(_) => self.emit(EngineEvent::Notice(EngineNotice::LivenessCheckUnavailable)),
         }
         hook::seed_from_held_keys();
         if !hook::engage() {
@@ -653,6 +794,79 @@ impl EngineState {
         self.arm_countdown(remaining);
     }
 
+    /// A raw keyboard message arrived. While locked, checks shortly afterwards that the hook saw
+    /// it too.
+    fn on_raw_input(&mut self) {
+        if self.session.state() != SessionState::Locked
+            || hook::phase() != Some(Phase::Locked)
+            || self.pending_raw_ticks.is_some()
+        {
+            return;
+        }
+        let raw_ticks = qpc::ticks();
+        // SAFETY: `self.hwnd` is this thread's window; the timer is killed in `end` and `finish`.
+        let armed = unsafe {
+            SetTimer(
+                Some(self.hwnd),
+                TIMER_HOOK_CHECK,
+                millis(LIVENESS_CHECK_DELAY),
+                None,
+            )
+        };
+        // If the timer can't be armed, the next WM_INPUT tries again.
+        if armed != 0 {
+            self.pending_raw_ticks = Some(raw_ticks);
+        }
+    }
+
+    /// The hook-liveness check: ends the lock if the hook missed a key Raw Input saw, unless the
+    /// key went to an elevated window.
+    fn on_hook_check(&mut self) {
+        self.kill_timer(TIMER_HOOK_CHECK);
+        let Some(raw_ticks) = self.pending_raw_ticks.take() else {
+            return;
+        };
+        if self.session.state() != SessionState::Locked || hook::phase() != Some(Phase::Locked) {
+            return;
+        }
+        let last_hook = hook::last_callback_ticks().map(QpcClock::at);
+        if liveness::hook_alive(QpcClock::at(raw_ticks), last_hook) {
+            return;
+        }
+        match foreground::is_elevated_above_us() {
+            Some(true) => {
+                if !self.elevated_notified {
+                    self.elevated_notified = true;
+                    self.emit(EngineEvent::Notice(EngineNotice::ElevatedWindowBypass));
+                }
+            }
+            Some(false) => self.fail(EngineError::HookLost),
+            // No foreground window: inconclusive. The next keystroke arms a new check.
+            None => {}
+        }
+    }
+
+    /// A keyboard was connected or disconnected. Reported only during a session, and only when it
+    /// differs from the keyboards known at lock start (Windows may replay arrivals of connected
+    /// devices when the window registers).
+    fn on_device_change(&mut self, change: u32, handle: isize) {
+        if self.session.state() == SessionState::Idle {
+            return;
+        }
+        let known = self.known_keyboards.iter().position(|&h| h == handle);
+        match (change, known) {
+            (GIDC_REMOVAL, Some(index)) => {
+                self.known_keyboards.swap_remove(index);
+                self.emit(EngineEvent::DeviceChanged(DeviceChange::Removed));
+            }
+            (GIDC_ARRIVAL, None) => {
+                self.known_keyboards.push(handle);
+                self.emit(EngineEvent::DeviceChanged(DeviceChange::Arrived));
+            }
+            _ => {}
+        }
+    }
+
     fn arm_countdown(&mut self, remaining: Duration) {
         match countdown::next_tick(remaining) {
             Some(after) => {
@@ -689,6 +903,8 @@ impl EngineState {
         }
         self.kill_timer(TIMER_SESSION);
         self.kill_timer(TIMER_COUNTDOWN);
+        self.kill_timer(TIMER_HOOK_CHECK);
+        self.pending_raw_ticks = None;
         hook::enter_draining();
         self.emit_status();
 
@@ -779,7 +995,9 @@ impl EngineState {
         self.kill_timer(TIMER_SESSION);
         self.kill_timer(TIMER_DRAIN);
         self.kill_timer(TIMER_COUNTDOWN);
+        self.kill_timer(TIMER_HOOK_CHECK);
         self.last_countdown_secs = None;
+        self.pending_raw_ticks = None;
         match self.hook.take() {
             Some(handle) => {
                 if hook::uninstall(handle).is_err() {
@@ -788,6 +1006,15 @@ impl EngineState {
             }
             None => hook::clear(),
         }
+        if self.raw_input_registered {
+            // Idle means no registration (invariant 4). If removal fails, say so; the registration
+            // still ends with the process.
+            if raw_input::remove().is_err() {
+                self.emit(EngineEvent::Notice(EngineNotice::RawInputNotRemoved));
+            }
+            self.raw_input_registered = false;
+        }
+        self.known_keyboards.clear();
         self.watchdog.disarm();
         self.watchdog_generation = None;
         if let Ok(reason) = self.session.finished() {

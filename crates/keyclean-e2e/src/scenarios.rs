@@ -1,5 +1,5 @@
-//! The automated M1 and M2 checks. Each maps to steps in docs/testing/manual/M1.md, or to
-//! docs/testing/manual/M2.md when its steps start with "M2".
+//! The automated M1-M3 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3".
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -10,14 +10,15 @@ use std::time::{Duration, Instant};
 use keyclean_win::keyclean_core::countdown;
 use keyclean_win::testkit::inject::{Stroke, vk};
 use keyclean_win::testkit::observer::Observer;
-use keyclean_win::testkit::{held, system};
+use keyclean_win::testkit::{self, held, system};
 use keyclean_win::{
     EndReason, EngineClient, EngineEvent, EngineNotice, SessionState, SystemTransition,
 };
 
 use crate::harness::{
-    EngineRig, PROBE_WINDOW, dev_request, expect_no_stuck_keys, expect_probes_blocked,
-    expect_probes_pass, expect_reason, send, sleep, wait_until,
+    EngineRig, PROBE_WINDOW, dev_request, expect_no_raw_input_registration, expect_no_stuck_keys,
+    expect_probes_blocked, expect_probes_pass, expect_reason, probe_passes, send, sleep,
+    wait_until,
 };
 
 /// Result of one scenario.
@@ -106,16 +107,54 @@ pub fn engine_scenarios() -> Vec<Scenario> {
             name: "Hard deadline releases a lock with no session timer",
             run: safety_timeout,
         },
+        Scenario {
+            id: "S17",
+            steps: "M3 A",
+            name: "A silently removed hook is detected and reported",
+            run: hook_lost,
+        },
+        Scenario {
+            id: "S18",
+            steps: "M3 A",
+            name: "A failed hook install locks nothing and says so",
+            run: install_fails,
+        },
+        // Last of the in-process checks: every session above must have removed its Raw Input
+        // registration.
+        Scenario {
+            id: "S22",
+            steps: "M3 A",
+            name: "No Raw Input registration while idle",
+            run: idle_registration,
+        },
     ]
 }
 
+/// S20, opt-in (`--stall`): a real `LowLevelHooksTimeout`.
+pub fn hook_timeout_scenario() -> Scenario {
+    Scenario {
+        id: "S20",
+        steps: "M3 A",
+        name: "A hook Windows times out is detected",
+        run: hook_timeout,
+    }
+}
+
 pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
-    let mut list = vec![Scenario {
-        id: "S9",
-        steps: "8",
-        name: "Killing lock_smoke mid-lock releases input",
-        run: kill_lock_smoke,
-    }];
+    let mut list = vec![
+        Scenario {
+            id: "S9",
+            steps: "8",
+            name: "Killing lock_smoke mid-lock releases input",
+            run: kill_lock_smoke,
+        },
+        Scenario {
+            id: "S19",
+            steps: "M3 A",
+            name: "A hung engine thread is ended by the watchdog",
+            run: engine_hang,
+        },
+    ];
     if !skip_app {
         list.push(Scenario {
             id: "S10",
@@ -140,6 +179,18 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
             steps: "M2 1",
             name: "Countdown ticks through the engine process",
             run: countdown_ticks,
+        });
+        list.push(Scenario {
+            id: "S21",
+            steps: "M3 8",
+            name: "Killing the engine process mid-lock: input back, engine restarted",
+            run: kill_engine,
+        });
+        list.push(Scenario {
+            id: "S23",
+            steps: "M3 9",
+            name: "taskkill without /F ends the app cleanly",
+            run: taskkill_app,
         });
     }
     list
@@ -951,6 +1002,375 @@ pub fn focused_app_chord() -> Outcome {
         system::request_close(pid, APP_WINDOW_CLASS);
         let _ = wait_exit(&mut app.0, Duration::from_secs(20));
         outcome
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// M3: safety hardening
+// ---------------------------------------------------------------------------------------------
+
+/// How soon the hook-liveness check must end a lock after input gets past a lost hook: the check
+/// runs 250 ms after the first `WM_INPUT`, plus margin.
+const HOOK_LOST_LIMIT: Duration = Duration::from_secs(1);
+
+/// What the engine's Raw Input sink saw, for failure messages: "no WM_INPUT" means the detector
+/// had nothing to compare (e.g. injected keys don't produce raw input), not that it ignored it.
+fn raw_input_note(before: u64) -> String {
+    let seen = testkit::raw_input_seen().saturating_sub(before);
+    if seen == 0 {
+        "the engine saw no WM_INPUT at all".into()
+    } else {
+        format!("the engine saw {seen} WM_INPUT message(s)")
+    }
+}
+
+/// S17: the engine's hook disappears without the engine knowing (as when Windows removes a hook
+/// that timed out). The next keystroke gets through; the liveness check must notice, end the lock
+/// with `error.hook_lost` and leave nothing registered.
+fn hook_lost(ctx: &mut Ctx<'_>) -> Outcome {
+    let mut run = || -> Result<String, String> {
+        let raw_before = testkit::raw_input_seen();
+        ctx.rig.lock_and_wait(Duration::from_secs(10))?;
+        expect_probes_blocked(ctx.observer)?;
+        ctx.rig
+            .engine()
+            .testkit_drop_hook()
+            .map_err(|e| e.details())?;
+        sleep(Duration::from_millis(100));
+        let typed = Instant::now();
+        if !probe_passes(ctx.observer, vk::F13)? {
+            return Err("a probe was still blocked after the hook was removed".into());
+        }
+        let ended = ctx
+            .rig
+            .wait_ended_with_errors(typed, Duration::from_secs(3))
+            .map_err(|e| format!("{e}; {}", raw_input_note(raw_before)))?;
+        expect_reason(&ended, EndReason::EngineError)?;
+        if !ended.errors.iter().any(|k| k == "error.hook_lost") {
+            return Err(format!(
+                "ended without error.hook_lost (errors: {:?})",
+                ended.errors
+            ));
+        }
+        if ended.after > HOOK_LOST_LIMIT {
+            return Err(format!(
+                "detected only {} ms after the leaked key (limit {} ms)",
+                ended.after.as_millis(),
+                HOOK_LOST_LIMIT.as_millis()
+            ));
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        expect_no_raw_input_registration()?;
+        Ok(format!(
+            "lock ended {} ms after the first leaked key; {}; notices {:?}",
+            ended.after.as_millis(),
+            raw_input_note(raw_before),
+            ended.notices
+        ))
+    };
+    let result = run();
+    ctx.rig.ensure_idle();
+    result.into()
+}
+
+/// S18: Windows refuses the hook (forced by the test kit). Nothing may be locked, the error must
+/// say so, and the engine must be ready again.
+fn install_fails(ctx: &mut Ctx<'_>) -> Outcome {
+    let mut run = || -> Result<String, String> {
+        ctx.rig.engine().testkit_fail_next_install();
+        let since = ctx.rig.lock(Duration::from_secs(3))?;
+        let ended = ctx
+            .rig
+            .wait_ended_with_errors(since, Duration::from_secs(3))?;
+        expect_reason(&ended, EndReason::EngineError)?;
+        if !ended.errors.iter().any(|k| k == "error.hook_install") {
+            return Err(format!(
+                "ended without error.hook_install (errors: {:?})",
+                ended.errors
+            ));
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_raw_input_registration()?;
+        // The engine must still lock normally afterwards.
+        ctx.rig.lock_and_wait(Duration::from_secs(2))?;
+        expect_probes_blocked(ctx.observer)?;
+        Ok(format!(
+            "ended after {} ms with error.hook_install; nothing blocked; next lock works",
+            ended.after.as_millis()
+        ))
+    };
+    let result = run();
+    ctx.rig.ensure_idle();
+    result.into()
+}
+
+/// S22: the engine registers Raw Input only during a session (invariant 4).
+fn idle_registration(ctx: &mut Ctx<'_>) -> Outcome {
+    ctx.rig.ensure_idle();
+    expect_no_raw_input_registration()
+        .map(|()| "GetRegisteredRawInputDevices reports none after every session".to_string())
+        .into()
+}
+
+/// S20 (opt-in): one hook callback sleeps for 1.5 s, past `LowLevelHooksTimeout` (1 s at most).
+/// Windows then passes that key on without the hook's verdict, so the liveness check must end the
+/// lock with `error.hook_lost`. Whether Windows also removed the hook shows in the engine's
+/// `HookAlreadyRemoved` notice (its own unhook then fails).
+fn hook_timeout(ctx: &mut Ctx<'_>) -> Outcome {
+    let mut run = || -> Result<String, String> {
+        let raw_before = testkit::raw_input_seen();
+        ctx.rig.lock_and_wait(Duration::from_secs(12))?;
+        expect_probes_blocked(ctx.observer)?;
+        testkit::stall_next_callback(1500);
+        ctx.observer.reset();
+        let typed = Instant::now();
+        send(&[Stroke::down(vk::F13), Stroke::up(vk::F13)])?;
+        let leaked = wait_until(Duration::from_secs(3), || ctx.observer.downs(vk::F13) > 0);
+        let ended = ctx
+            .rig
+            .wait_ended_with_errors(typed, Duration::from_secs(5))
+            .map_err(|e| {
+                format!(
+                    "{e}; stalled key leaked: {leaked}; {}",
+                    raw_input_note(raw_before)
+                )
+            })?;
+        expect_reason(&ended, EndReason::EngineError)?;
+        if !ended.errors.iter().any(|k| k == "error.hook_lost") {
+            return Err(format!(
+                "ended without error.hook_lost (errors: {:?})",
+                ended.errors
+            ));
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        let removed = ended.notices.contains(&EngineNotice::HookAlreadyRemoved);
+        Ok(format!(
+            "stalled key leaked: {leaked}; lock ended {} ms after it with error.hook_lost;              Windows removed the hook: {removed}; {}",
+            ended.after.as_millis(),
+            raw_input_note(raw_before)
+        ))
+    };
+    let result = run();
+    ctx.rig.ensure_idle();
+    result.into()
+}
+
+/// Hidden argument: run [`child_hang`] instead of the harness.
+pub const CHILD_HANG_FLAG: &str = "--child-hang";
+
+/// Child process for S19: locks 3 s with an in-process engine, then hangs the engine thread. The
+/// watchdog must end this process at the hard deadline (13 s) plus its 1 s grace. Exit code 4
+/// means it didn't.
+pub fn child_hang() -> i32 {
+    let Ok(mut rig) = EngineRig::start() else {
+        println!("engine failed to start");
+        return 3;
+    };
+    if let Err(e) = rig.lock_and_wait(Duration::from_secs(3)) {
+        println!("lock failed: {e}");
+        return 3;
+    }
+    if rig.engine().testkit_hang(Duration::from_secs(60)).is_err() {
+        println!("hang request failed");
+        return 3;
+    }
+    println!("locked and hung");
+    sleep(Duration::from_secs(30));
+    println!("still alive");
+    4
+}
+
+/// S19: the engine thread hangs mid-lock (in a child process, because the watchdog aborts the
+/// process). Input must come back by the hard deadline plus the watchdog's 1 s grace.
+fn engine_hang(ctx: &mut Ctx<'_>) -> Outcome {
+    let Ok(exe) = std::env::current_exe() else {
+        return Outcome::Skip("can't locate the harness executable".into());
+    };
+    let run = || -> Result<String, String> {
+        let child = Command::new(&exe)
+            .arg(CHILD_HANG_FLAG)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("couldn't start the child: {e}"))?;
+        let mut guard = Guard(child);
+        let stdout = guard.0.stdout.take().ok_or("no stdout")?;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+        let first = rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "the child didn't report a lock within 10 s".to_string())?;
+        if first != "locked and hung" {
+            return Err(format!("child: {first}"));
+        }
+        let hung = Instant::now();
+        // No input is sent while hung: the stalled hook would hold each key up to 1 s.
+        if !wait_exit(&mut guard.0, Duration::from_secs(20)) {
+            return Err("the child was still running 20 s after the hang".into());
+        }
+        let after = hung.elapsed().as_secs_f64();
+        let code = guard.0.try_wait().ok().flatten().and_then(|s| s.code());
+        if code == Some(4) {
+            return Err("the watchdog didn't end the hung child".into());
+        }
+        if !(11.5..=15.5).contains(&after) {
+            return Err(format!(
+                "the child ended {after:.2} s after the hang (expected about 14 s: 13 s hard \
+                 deadline + 1 s grace); exit code {code:?}"
+            ));
+        }
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "watchdog ended the hung engine's process {after:.2} s after the hang (exit code \
+             {code:?}); input back"
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    result.into()
+}
+
+/// PIDs of running `keyclean.exe` processes (the app and its engine process).
+fn keyclean_pids() -> Result<Vec<u32>, String> {
+    let out = Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq keyclean.exe", "/FO", "CSV", "/NH"])
+        .output()
+        .map_err(|e| format!("couldn't run tasklist: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.to_ascii_lowercase().starts_with("\"keyclean.exe\""))
+        .filter_map(|l| l.split(',').nth(1)?.trim_matches('"').parse().ok())
+        .collect())
+}
+
+fn app_log(id: &str) -> String {
+    target_dir()
+        .map(|d| d.join(format!("e2e-{id}-app.log")))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default()
+}
+
+/// S21: the engine process is killed mid-lock. Input must come back at once, and the app must
+/// stay up and start a new, idle engine.
+fn kill_engine(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app(&exe, Some(15), "S21")?;
+        let app_pid = app.0.id();
+        wait_blocked(ctx.observer, Duration::from_secs(20))?;
+        let engine_pid = keyclean_pids()?
+            .into_iter()
+            .find(|&pid| pid != app_pid)
+            .ok_or("found no engine process")?;
+        Command::new("taskkill")
+            .args(["/F", "/PID", &engine_pid.to_string()])
+            .output()
+            .map_err(|e| format!("couldn't run taskkill: {e}"))?;
+        let input_back = wait_input_back(ctx.observer, Duration::from_secs(3))?
+            .ok_or("input wasn't back within 3 s of killing the engine")?;
+        if !wait_until(Duration::from_secs(8), || {
+            app_log("S21").contains("engine restarted")
+        }) {
+            return Err(format!(
+                "input back {} ms after the kill, but the app log shows no engine restart \
+                 (log: e2e-S21-app.log)",
+                input_back.as_millis()
+            ));
+        }
+        if !matches!(app.0.try_wait(), Ok(None)) {
+            return Err("the app exited after its engine was killed".into());
+        }
+        // The new engine must come up idle: nothing may be blocked after the restart.
+        expect_probes_pass(ctx.observer).map_err(|e| format!("after the engine restart: {e}"))?;
+        let mut pids = Vec::new();
+        if !wait_until(Duration::from_secs(3), || {
+            pids = keyclean_pids().unwrap_or_default();
+            pids.len() == 2 && !pids.contains(&engine_pid)
+        }) {
+            return Err(format!(
+                "expected the app and one new engine process, found PIDs {pids:?}"
+            ));
+        }
+        app.0.kill().map_err(|e| format!("kill failed: {e}"))?;
+        let _ = wait_exit(&mut app.0, Duration::from_secs(5));
+        expect_no_keyclean_left()?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "input back {} ms after the kill; new engine process started; app kept running",
+            input_back.as_millis()
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S23: `taskkill` without `/F` sends WM_CLOSE to the app's windows, including tao's and the
+/// single-instance plugin's hidden helpers. The app must exit cleanly instead of hanging.
+fn taskkill_app(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app(&exe, Some(15), "S23")?;
+        let pid = app.0.id();
+        wait_blocked(ctx.observer, Duration::from_secs(20))?;
+        let _ = wait_responsive(pid, Duration::from_secs(8));
+        let classes: Vec<String> = system::windows_of(pid)
+            .into_iter()
+            .map(|w| w.class)
+            .collect();
+        expect_probes_blocked(ctx.observer).map_err(|_| {
+            "the autolock ended before taskkill was sent (app too slow)".to_string()
+        })?;
+        // Without /F: taskkill asks the processes to close (WM_CLOSE to their windows).
+        Command::new("taskkill")
+            .args(["/IM", "keyclean.exe"])
+            .output()
+            .map_err(|e| format!("couldn't run taskkill: {e}"))?;
+        let sent = Instant::now();
+        let input_back = wait_input_back(ctx.observer, Duration::from_secs(5))?;
+        let exited = wait_exit(&mut app.0, Duration::from_secs(10)).then(|| sent.elapsed());
+        let log = app_log("S23");
+        let guard_line = log
+            .lines()
+            .find(|l| l.contains("close guard:"))
+            .unwrap_or("no close guard line")
+            .to_string();
+        let detail = format!(
+            "app windows [{}]; {guard_line}; input back: {}; process exit: {}; log: \
+             e2e-S23-app.log",
+            classes.join(", "),
+            describe(input_back, "NO (waited 5 s)"),
+            describe(exited, "still running after 10 s"),
+        );
+        if input_back.is_none() || exited.is_none() {
+            return Err(detail);
+        }
+        expect_no_keyclean_left().map_err(|e| format!("{detail}; {e}"))?;
+        if !log.contains("session ended: UserRequest") {
+            return Err(format!(
+                "{detail}; the app log doesn't show the exit ending the session"
+            ));
+        }
+        expect_no_stuck_keys()?;
+        Ok(detail)
     };
     let result = run();
     crate::harness::release_watched_keys();

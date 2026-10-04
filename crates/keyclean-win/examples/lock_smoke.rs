@@ -76,6 +76,7 @@ fn main() {
             }
             Ok(EngineEvent::Error(e)) => println!("error: {}", e.details()),
             Ok(EngineEvent::Notice(n)) => println!("notice: {n:?}"),
+            Ok(EngineEvent::DeviceChanged(c)) => println!("device: {c:?}"),
             Err(_) => {
                 println!(
                     "No session end reported within {give_up:?}; exiting (input is released on exit)."

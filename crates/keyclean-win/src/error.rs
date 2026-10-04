@@ -30,6 +30,9 @@ pub enum EngineError {
         /// Windows' message for it.
         message: String,
     },
+    /// The keyboard hook stopped receiving input during a lock (Windows removed or skipped it), so
+    /// the lock was ended.
+    HookLost,
     /// The session timer couldn't be started, so the lock was released.
     Timer,
     /// The engine's message loop failed, so the lock was released.
@@ -87,6 +90,7 @@ impl EngineError {
             EngineError::InvalidRequest(_) => "error.invalid_duration",
             EngineError::ThreadSpawn(_) | EngineError::WindowSetup { .. } => "error.engine_start",
             EngineError::HookInstall { .. } => "error.hook_install",
+            EngineError::HookLost => "error.hook_lost",
             EngineError::Timer | EngineError::MessageLoop | EngineError::WindowDestroyed => {
                 "error.engine_failed"
             }
@@ -108,6 +112,10 @@ impl EngineError {
             }
             EngineError::HookInstall { code, message } => {
                 format!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: HRESULT {code:#010X}: {message}")
+            }
+            EngineError::HookLost => {
+                "the keyboard hook stopped receiving input (Windows removed it or skipped it)"
+                    .into()
             }
             EngineError::Timer => "SetTimer failed for the session timer".into(),
             EngineError::MessageLoop => "GetMessageW returned an error".into(),

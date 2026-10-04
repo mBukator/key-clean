@@ -48,7 +48,7 @@ pub fn keyboards() -> Result<Vec<KeyboardDevice>, EngineError> {
     Ok(keyboards)
 }
 
-fn raw_input_devices() -> Result<Vec<RAWINPUTDEVICELIST>, EngineError> {
+pub(crate) fn raw_input_devices() -> Result<Vec<RAWINPUTDEVICELIST>, EngineError> {
     let entry_size = size_of::<RAWINPUTDEVICELIST>() as u32;
     // A device can arrive between the two calls; retry a few times.
     for _ in 0..3 {
@@ -75,6 +75,16 @@ fn raw_input_devices() -> Result<Vec<RAWINPUTDEVICELIST>, EngineError> {
         code: ERROR_INSUFFICIENT_BUFFER.0 as i32,
         message: "device list kept changing".into(),
     })
+}
+
+/// Raw Input handles of the connected keyboards, without names (no configuration-manager calls,
+/// so it is cheap enough for the engine thread).
+pub(crate) fn keyboard_handles() -> Result<Vec<isize>, EngineError> {
+    Ok(raw_input_devices()?
+        .into_iter()
+        .filter(|device| device.dwType == RIM_TYPEKEYBOARD)
+        .map(|device| device.hDevice.0 as isize)
+        .collect())
 }
 
 fn last_error() -> EngineError {

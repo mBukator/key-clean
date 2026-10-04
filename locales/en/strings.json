@@ -41,5 +41,11 @@
     "error.engine_start": "KeyClean couldn't start its input engine.",
     "error.hook_install": "Windows didn't allow KeyClean to lock the keyboard. Nothing was locked.",
     "error.engine_failed": "Something went wrong during the lock, so KeyClean released your keyboard.",
-    "error.devices": "KeyClean couldn't list your keyboards."
+    "error.devices": "KeyClean couldn't list your keyboards.",
+    "error.hook_lost": "Windows stopped KeyClean's keyboard lock early. Your keyboard works again.",
+    "notice.elevated_window": "Typing reaches administrator windows during a lock.",
+    "notice.keyboard_disconnected": "Keyboard disconnected.",
+    "notice.keyboard_connected": "A keyboard was connected. It is locked too.",
+    "notice.engine_restarted": "KeyClean's lock engine stopped and was restarted. Nothing is locked.",
+    "notice.liveness_unavailable": "KeyClean can't check that the lock is still working. The timer and Ctrl+Alt+K still end it."
 }

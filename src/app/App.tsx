@@ -124,17 +124,22 @@ export function App() {
                 setRequestError(toErrorInfo(err));
             });
 
-        invoke<Keyboard[]>("list_keyboards")
-            .then(setKeyboards)
-            .catch((err: unknown) => {
-                setRequestError(toErrorInfo(err));
-            });
-
         return () => {
             disposed = true;
             unlisten?.();
         };
     }, []);
+
+    const deviceChanges = status?.deviceChanges ?? 0;
+
+    // Lists keyboards on start and again after a keyboard is connected or disconnected.
+    useEffect(() => {
+        invoke<Keyboard[]>("list_keyboards")
+            .then(setKeyboards)
+            .catch((err: unknown) => {
+                setRequestError(toErrorInfo(err));
+            });
+    }, [deviceChanges]);
 
     const seconds = selected ?? options?.defaultSeconds ?? null;
 
@@ -160,6 +165,7 @@ export function App() {
     const canLock = status?.engineAvailable === true && idle && seconds !== null;
     const error = requestError ?? status?.error ?? null;
     const countdown = status?.countdownSecs ?? null;
+    const notice = status?.notice && isStringKey(status.notice) ? t(status.notice) : null;
 
     return (
         <main className="flex min-h-screen flex-col gap-6 p-6">
@@ -242,6 +248,14 @@ export function App() {
                             : t("status.lastEnd", {
                                   reason: t(END_REASON_KEYS[status.lastEndReason]),
                               })}
+                    </p>
+                )}
+                {notice && (
+                    <p
+                        aria-live="polite"
+                        className="rounded border border-amber-300 bg-amber-50 p-3 break-words text-amber-900"
+                    >
+                        {notice}
                     </p>
                 )}
                 {error && <ErrorMessage error={error} />}

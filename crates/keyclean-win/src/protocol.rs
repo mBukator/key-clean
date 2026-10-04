@@ -8,7 +8,7 @@ use std::time::Duration;
 use keyclean_core::session::{EndReason, SessionState, SystemTransition};
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{EngineEvent, EngineNotice, EngineStatus, LockRequest};
+use crate::engine::{DeviceChange, EngineEvent, EngineNotice, EngineStatus, LockRequest};
 use crate::error::EngineError;
 
 /// App → engine.
@@ -74,6 +74,16 @@ pub(crate) enum WireNotice {
     DrainTimedOut,
     PowerNotificationUnavailable,
     SessionNotificationUnavailable,
+    LivenessCheckUnavailable,
+    RawInputNotRemoved,
+    ElevatedWindowBypass,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WireDeviceChange {
+    Arrived,
+    Removed,
 }
 
 /// Engine → app.
@@ -97,6 +107,10 @@ pub(crate) enum WireEvent {
     },
     Notice {
         notice: WireNotice,
+    },
+    /// A keyboard was connected or disconnected during a lock. No name or id crosses.
+    Device {
+        change: WireDeviceChange,
     },
 }
 
@@ -171,6 +185,9 @@ impl From<EngineNotice> for WireNotice {
             EngineNotice::SessionNotificationUnavailable => {
                 WireNotice::SessionNotificationUnavailable
             }
+            EngineNotice::LivenessCheckUnavailable => WireNotice::LivenessCheckUnavailable,
+            EngineNotice::RawInputNotRemoved => WireNotice::RawInputNotRemoved,
+            EngineNotice::ElevatedWindowBypass => WireNotice::ElevatedWindowBypass,
         }
     }
 }
@@ -184,6 +201,27 @@ impl From<WireNotice> for EngineNotice {
             WireNotice::SessionNotificationUnavailable => {
                 EngineNotice::SessionNotificationUnavailable
             }
+            WireNotice::LivenessCheckUnavailable => EngineNotice::LivenessCheckUnavailable,
+            WireNotice::RawInputNotRemoved => EngineNotice::RawInputNotRemoved,
+            WireNotice::ElevatedWindowBypass => EngineNotice::ElevatedWindowBypass,
+        }
+    }
+}
+
+impl From<DeviceChange> for WireDeviceChange {
+    fn from(c: DeviceChange) -> Self {
+        match c {
+            DeviceChange::Arrived => WireDeviceChange::Arrived,
+            DeviceChange::Removed => WireDeviceChange::Removed,
+        }
+    }
+}
+
+impl From<WireDeviceChange> for DeviceChange {
+    fn from(c: WireDeviceChange) -> Self {
+        match c {
+            WireDeviceChange::Arrived => DeviceChange::Arrived,
+            WireDeviceChange::Removed => DeviceChange::Removed,
         }
     }
 }
@@ -206,6 +244,9 @@ impl From<&EngineEvent> for WireEvent {
             },
             EngineEvent::Notice(n) => WireEvent::Notice {
                 notice: (*n).into(),
+            },
+            EngineEvent::DeviceChanged(c) => WireEvent::Device {
+                change: (*c).into(),
             },
         }
     }
@@ -238,6 +279,7 @@ impl WireEvent {
                 details,
             }),
             WireEvent::Notice { notice } => EngineEvent::Notice(notice.into()),
+            WireEvent::Device { change } => EngineEvent::DeviceChanged(change.into()),
         })
     }
 }
@@ -310,16 +352,38 @@ mod tests {
             EngineNotice::DrainTimedOut,
             EngineNotice::PowerNotificationUnavailable,
             EngineNotice::SessionNotificationUnavailable,
+            EngineNotice::LivenessCheckUnavailable,
+            EngineNotice::RawInputNotRemoved,
+            EngineNotice::ElevatedWindowBypass,
         ] {
             let event = EngineEvent::Notice(notice);
             assert_eq!(round_trip_event(event.clone()), event);
         }
+
+        for change in [DeviceChange::Arrived, DeviceChange::Removed] {
+            let event = EngineEvent::DeviceChanged(change);
+            assert_eq!(round_trip_event(event.clone()), event);
+        }
+        assert_eq!(
+            to_line(&WireEvent::from(&EngineEvent::DeviceChanged(
+                DeviceChange::Removed
+            ))),
+            r#"{"event":"device","change":"removed"}"#
+        );
 
         let error = round_trip_event(EngineEvent::Error(EngineError::AlreadyActive));
         match error {
             EngineEvent::Error(e) => {
                 assert_eq!(e.message_key(), "error.already_locked");
                 assert_eq!(e.details(), EngineError::AlreadyActive.details());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        match round_trip_event(EngineEvent::Error(EngineError::HookLost)) {
+            EngineEvent::Error(e) => {
+                assert_eq!(e.message_key(), "error.hook_lost");
+                assert_eq!(e.details(), EngineError::HookLost.details());
             }
             other => panic!("unexpected {other:?}"),
         }

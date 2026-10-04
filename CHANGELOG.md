@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unlock now** button, and a "Cleaning complete" message when the timer ends the lock.
 - Harness checks S15 (countdown through the engine process) and S16 (the hard deadline alone ends a lock whose session timer is switched off), and the M2 manual test.
 
+- Lost-hook check (M3): if Windows removes or skips KeyClean's keyboard hook during a lock, the lock ends within about a quarter of a second and the window says why. It uses a Raw Input sink registered only during a lock, whose messages are counted but never read (ADR 0010).
+- A warning when typing reaches an administrator window during a lock; the lock stays on everywhere else.
+- Notices when a keyboard is connected or disconnected during a lock; the keyboard list refreshes.
+- Automatic engine restart: if the engine process dies, the app starts a new idle one, at most 3 times in 5 minutes (ADR 0011).
+- Harness checks S17-S23 (lost hook, failed hook install, hung engine thread, real hook timeout with `--stall`, engine killed, no Raw Input registration at idle, `taskkill` without `/F`), the M3 manual test, ADRs 0010 and 0011, and the M3 research notes.
+
 ### Fixed
 
+- `taskkill` without `/F` made the KeyClean window hang (the lock still ended). The app now exits cleanly.
 - With KeyClean's own window focused, Windows could skip the keyboard hook during a lock, so Win opened the Start menu and Ctrl+Alt+K needed several tries. The hook now lives in a process without a WebView.

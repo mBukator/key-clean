@@ -12,12 +12,15 @@ mod bridge;
 #[allow(dead_code)]
 mod i18n;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use keyclean_win::keyclean_core::policy::SafetyProfile;
 use keyclean_win::keyclean_core::presets;
+use keyclean_win::keyclean_core::restart::RestartBudget;
+use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{EngineClient, EngineError, EngineEvent, LockRequest, safety_profile};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
@@ -34,6 +37,23 @@ struct RelayDone(Mutex<Option<Receiver<()>>>);
 
 /// The latest status, for windows that ask instead of listening.
 struct StatusStore(Mutex<StatusDto>);
+
+/// Set once the app starts exiting, so an engine that dies then isn't restarted.
+struct Exiting(AtomicBool);
+
+/// Recent engine restarts, on a monotonic clock that starts with the app.
+struct Restarts {
+    budget: Mutex<RestartBudget>,
+    origin: Instant,
+}
+
+impl Restarts {
+    /// Whether the engine may be restarted now; records the restart if so.
+    fn allow(&self) -> bool {
+        let now = MonoTime::from_since_origin(self.origin.elapsed());
+        guard(&self.budget).allow(now)
+    }
+}
 
 fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -89,6 +109,11 @@ fn start_engine(app: &AppHandle) {
     let dev_cap = safety_profile() == SafetyProfile::Dev;
     // Managed before the engine starts, so the relay never drops an event.
     app.manage(StatusStore(Mutex::new(StatusDto::initial(dev_cap))));
+    app.manage(Exiting(AtomicBool::new(false)));
+    app.manage(Restarts {
+        budget: Mutex::new(RestartBudget::new()),
+        origin: Instant::now(),
+    });
     let set_engine = |available: bool, error: Option<ErrorDto>| {
         if let Some(store) = app.try_state::<StatusStore>() {
             guard(&store.0).set_engine(available, error);
@@ -129,17 +154,23 @@ fn e2e_autolock(engine: &EngineClient) {
     }
 }
 
-/// Relays engine events to the main window. Ends when the engine stops; the returned receiver
-/// then gets a signal (or disconnects).
+/// Relays engine events to the main window. Ends when the engine stops; if the engine process
+/// died, tries to restart it first. The returned receiver then gets a signal (or disconnects).
 fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Receiver<()>> {
     let (done_tx, done_rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("keyclean-events".into())
         .spawn(move || {
+            let mut engine_died = false;
             for event in events {
+                // Only reported when the process ended without the app asking.
+                engine_died |= matches!(event, EngineEvent::Error(EngineError::EngineProcess(_)));
                 // Session events only; never key data (privacy invariants).
                 match &event {
                     EngineEvent::Notice(notice) => eprintln!("[keyclean] notice: {notice:?}"),
+                    EngineEvent::DeviceChanged(change) => {
+                        eprintln!("[keyclean] device: {change:?}");
+                    }
                     EngineEvent::Error(e) => eprintln!("[keyclean] error: {}", e.details()),
                     EngineEvent::SessionEnded { reason } => {
                         eprintln!("[keyclean] session ended: {reason:?}");
@@ -160,6 +191,9 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
                 };
                 let _ = app.emit_to(MAIN_WINDOW, STATUS_EVENT, snapshot);
             }
+            if engine_died {
+                restart_engine(&app);
+            }
             let _ = done_tx.send(());
         });
     match spawned {
@@ -171,15 +205,87 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
     }
 }
 
+fn is_exiting(app: &AppHandle) -> bool {
+    app.try_state::<Exiting>()
+        .is_some_and(|e| e.0.load(Ordering::SeqCst))
+}
+
+fn update_status(app: &AppHandle, update: impl FnOnce(&mut StatusDto)) {
+    if let Some(store) = app.try_state::<StatusStore>() {
+        let snapshot = {
+            let mut status = guard(&store.0);
+            update(&mut status);
+            status.clone()
+        };
+        let _ = app.emit_to(MAIN_WINDOW, STATUS_EVENT, snapshot);
+    }
+}
+
+/// Replaces an engine process that died with a new one, within the restart budget. The new
+/// engine is idle: a lock is never resumed. Runs on the relay thread of the dead engine and never
+/// holds the slot lock while an engine starts or stops.
+fn restart_engine(app: &AppHandle) {
+    if is_exiting(app) {
+        return;
+    }
+    let allowed = app.try_state::<Restarts>().is_some_and(|r| r.allow());
+    if !allowed {
+        eprintln!("[keyclean] engine not restarted: too many restarts");
+        return;
+    }
+    let Some(slot) = app.try_state::<EngineSlot>() else {
+        return;
+    };
+    let dead = guard(&slot.0).take();
+    drop(dead); // Waits for the old process outside the lock.
+
+    let (engine, events) = match EngineClient::start() {
+        Ok(started) => started,
+        Err(e) => {
+            eprintln!("[keyclean] engine restart failed: {}", e.details());
+            update_status(app, |status| {
+                status.set_engine(false, Some(ErrorDto::from(&e)))
+            });
+            return;
+        }
+    };
+    let rejected = {
+        let mut current = guard(&slot.0);
+        // Checked under the lock `stop_engine` takes after setting the flag, so an exit either
+        // sees this engine in the slot or this check sees the exit.
+        if is_exiting(app) {
+            Some(engine)
+        } else {
+            *current = Some(engine);
+            None
+        }
+    };
+    if let Some(engine) = rejected {
+        drop(engine); // Outside the lock.
+        return;
+    }
+    update_status(app, StatusDto::set_engine_restarted);
+    let relay = forward_events(app.clone(), events);
+    if let Some(done) = app.try_state::<RelayDone>() {
+        *guard(&done.0) = relay;
+    }
+    eprintln!("[keyclean] engine restarted");
+}
+
 fn stop_engine(app: &AppHandle) {
+    if let Some(exiting) = app.try_state::<Exiting>() {
+        exiting.0.store(true, Ordering::SeqCst);
+    }
     if let Some(slot) = app.try_state::<EngineSlot>() {
         let engine = guard(&slot.0).take();
         drop(engine); // Releases any lock and stops the engine process.
     }
-    // Let the relay log how the session ended before the process exits.
-    if let Some(relay) = app.try_state::<RelayDone>()
-        && let Some(done) = guard(&relay.0).take()
-    {
+    // Let the relay log how the session ended before the process exits. The receiver is taken out
+    // first, so the lock isn't held while waiting.
+    let done = app
+        .try_state::<RelayDone>()
+        .and_then(|relay| guard(&relay.0).take());
+    if let Some(done) = done {
         let _ = done.recv_timeout(RELAY_DRAIN);
     }
 }
@@ -200,6 +306,10 @@ pub fn run() {
             focus_main_window(app);
         }))
         .setup(|app| {
+            // `setup` runs on the main thread, which owns the hidden helper windows.
+            let handle = app.handle().clone();
+            let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
+            eprintln!("[keyclean] close guard: {guarded} helper windows");
             start_engine(app.handle());
             Ok(())
         })
