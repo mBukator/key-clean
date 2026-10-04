@@ -6,6 +6,7 @@
 
 pub mod chord;
 pub mod countdown;
+pub mod devices;
 pub mod keystate;
 pub mod liveness;
 pub mod policy;
