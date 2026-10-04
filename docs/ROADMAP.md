@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | not started                                 |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                           |
+| ---------------------------------------------- | ----------- | ------------------------------------------------ |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                         |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                         |
+| M4 Device detection                            | §52 Phase 1 | **code-complete - awaiting manual verification** |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                      |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
+| M8 System tray                                 | §55 Phase 4 | not started                                      |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
+| M11 Packaging                                  | §55 Phase 4 | not started                                      |
+| M12 Open-source release                        | §56 Phase 5 | not started                                      |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
 
 ---
 
@@ -201,21 +201,40 @@ Acceptance (§60 "Safety"):
 
 ### M4 - Device detection
 
-Status: not started. Manual test: `docs/testing/manual/M4.md`.
+Status: **code-complete - awaiting manual verification** (2026-10-04). Manual test:
+`docs/testing/manual/M4.md` (Part A is `cargo run -p keyclean-e2e`, Part B is the device list).
 
-Scope: live keyboard / mouse / touchpad list (§24), arrival and removal via `WM_INPUT_DEVICE_CHANGE`
-(`RIDEV_DEVNOTIFY` on the hidden window), capability model per device (ADR 0004). Still informational:
-every keyboard is locked.
+Done in code:
+
+- **Device model (`keyclean-core::devices`).** Pure, unit-tested: Keyboard and Mouse are Supported,
+  a precision touchpad (HID 0x0D/0x05) is Limited, touchscreens and pens are Unsupported, other HID
+  collections are ignored. A touchpad's companion mouse collection (same parent device node) folds
+  into it, and the same for touchscreens and pens. Nothing else is merged.
+- **Enumeration (`keyclean-win::devices::input_devices`).** Raw Input list plus `RIDI_DEVICEINFO`
+  usage, friendly names from the configuration manager. Replaces `list_keyboards`.
+- **Live updates (ADR 0012).** `CM_Register_Notification` for the keyboard, mouse and HID interface
+  classes, in the app process (`keyclean-win::DeviceWatch`), no input registration. The app waits
+  for 400 ms of quiet, lists again, and emits `devices-changed` only when the list changed.
+- **Window.** Devices section grouped by kind, a capability label per device, plain-language notes
+  for Limited and Unsupported, and the line that mice and touchpads aren't locked yet. The
+  `list_keyboards` command became `list_devices`.
+- **Harness.** S1 counts keyboards among all devices; S22 now runs with the device watch active.
+- **Research.** `docs/research/m4-devices.md`.
+
+Open for the manual test: whether one physical keyboard can show as several rows (container folding
+was left out on purpose, see the research note), and whether the list is correct after sleep.
+
+Scope: live keyboard / mouse / touchpad list (§24), arrival and removal via
+`CM_Register_Notification` in the app (ADR 0012; Raw Input stays unregistered at idle), capability
+model per device (ADR 0004). Still informational: every keyboard is locked.
 
 Acceptance:
 
-- [ ] Connected devices are listed with friendly names
-      (note: M3's device notifications only exist during a lock, because Raw Input is registered
-      only then; a live list at idle needs a mechanism that registers for no input, e.g.
-      `CM_Register_Notification` for the keyboard interface class)
-- [ ] Plugging and unplugging updates the list without restarting
-- [ ] Each device shows Supported / Limited / Unsupported
-- [ ] Idle KeyClean still registers for no input (invariant 4)
+- [ ] Connected devices are listed with friendly names (M4.md steps 2-3)
+- [ ] Plugging and unplugging updates the list without restarting (M4.md steps 3-6)
+- [ ] Each device shows Supported / Limited / Unsupported (M4.md steps 2, 9, 10)
+- [ ] Idle KeyClean still registers for no input (invariant 4): harness S22 with the device watch
+      running, M4.md Part A
 
 ### M5 - Mouse and touchpad lock (§22, §23)
 

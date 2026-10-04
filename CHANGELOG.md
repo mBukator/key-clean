@@ -33,8 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic engine restart: if the engine process dies, the app starts a new idle one, at most 3 times in 5 minutes (ADR 0011).
 - Harness checks S17-S25 (lost hook, failed hook install, hung engine thread, real hook timeout with `--stall`, engine killed, no Raw Input registration at idle, `taskkill` without `/F`, lost hook with no other hook in the process, and the opt-in `--raw-diag` shortcut diagnostic), the M3 manual test, ADRs 0010 and 0011, and the M3 research notes.
 
+- Device list (M4): keyboards, mice, touchpads, touchscreens and pens with friendly names, grouped by kind, each marked Supported, Limited or Unsupported (ADR 0004). A precision touchpad is Limited; touchscreens and pens are Unsupported.
+- The list updates by itself when a device is plugged in or unplugged, also while idle. It watches device interfaces with `CM_Register_Notification` in the app and registers for no input (ADR 0012).
+- The window says plainly that every keyboard is locked and mice and touchpads aren't yet.
+- Harness check S22 now runs with the device watch active; the M4 manual test and research note.
+
 ### Changed
 
+- The `list_keyboards` command is now `list_devices` and returns every input device with its kind and capability.
 - The watchdog ends a hung engine with `TerminateProcess` instead of `abort()`, which went through Windows Error Reporting and kept the hook installed about 5 s longer.
 - Harness check S6 no longer sends Win+G: it opens the Xbox Game Bar despite the lock, which blinds the lost-hook check while the overlay is open (documented limitation).
 
