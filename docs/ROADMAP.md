@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                           |
+| ---------------------------------------------- | ----------- | ------------------------------------------------ |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                         |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                         |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                         |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                         |
+| M4 Device detection                            | §52 Phase 1 | **done**                                         |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **code-complete - awaiting manual verification** |
+| M6 Full-screen overlay                         | §54 Phase 3 | not started                                      |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                      |
+| M8 System tray                                 | §55 Phase 4 | not started                                      |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                      |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                      |
+| M11 Packaging                                  | §55 Phase 4 | not started                                      |
+| M12 Open-source release                        | §56 Phase 5 | not started                                      |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                      |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                      |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable      |
 
 ---
 
@@ -247,7 +247,27 @@ Acceptance:
 
 ### M5 - Mouse and touchpad lock (§22, §23)
 
-Status: not started. Manual test: `docs/testing/manual/M5.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S26-S32, S22), `--mouse-diag` (S33), and Part B of `docs/testing/manual/M5.md`.
+
+Done in code (ADR 0013, research note `docs/research/m5-mouse.md`):
+
+- **Targets.** A lock blocks the keyboard, the mouse and touchpad, or both. The window has two
+  checkboxes, Keyboard on and Mouse and touchpad off by default (Max's decision, 2026-10-05: locking
+  the mouse removes the clickable Unlock now button). `lock_keyboard` became `lock_input`.
+- **Mouse hook.** `WH_MOUSE_LL` on the engine thread, only when the mouse is locked. While locked it
+  blocks movement, every button, both wheels and unknown mouse messages. Held buttons drain like keys
+  (`keyclean-core::mouse`). Injected mouse input is blocked too.
+- **Exits.** The keyboard hook is installed for every lock, so Ctrl+Alt+K works in a mouse-only lock.
+  There it lets keys through and swallows only the key that completes the chord (Max's decision).
+  Both hooks enforce the hard deadline. A failed mouse hook install removes the keyboard hook again.
+- **Lost-hook check.** Mouse Raw Input during a mouse lock; each `WM_INPUT` is told apart by its
+  header only (ADR 0010 amended). A miss ends the lock with "mouse lock stopped early" (Max's
+  decision), unless the window under the cursor is elevated.
+- **Notices and status.** Device notices say keyboard or mouse; the status line and notices follow
+  what the engine says is locked.
+- **Harness.** Tagged mouse probes and a mouse observer that swallows leaking probe clicks; S26-S32,
+  S22 after a mouse lock, opt-in S33 `--mouse-diag`; `lock_smoke --mouse`.
 
 Scope: `WH_MOUSE_LL` on the same engine thread, full mouse lock (§22) with the same four exits, touchpad
 handled through the capability model (Supported / Limited / Unsupported, ADR 0004). Emergency chord
