@@ -74,6 +74,49 @@ pub struct LockPlan {
     pub dev_cap: bool,
 }
 
+/// Which kinds of input a lock blocks. The hooks are global (ADR 0004), so this is "every keyboard"
+/// and "every mouse and touchpad", never a single device.
+///
+/// The keyboard hook is installed for every lock, even when only the mouse is locked: it carries
+/// the emergency chord (invariant 1). With `keyboard` off it lets keys through and only swallows
+/// the key that completes the chord ([`crate::keystate::keyboard_phase`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockTargets {
+    /// Block keyboard input.
+    pub keyboard: bool,
+    /// Block mouse and touchpad input.
+    pub mouse: bool,
+}
+
+impl LockTargets {
+    /// Keyboards only, the default.
+    pub const KEYBOARD: LockTargets = LockTargets {
+        keyboard: true,
+        mouse: false,
+    };
+
+    /// Keyboards, mice and touchpads.
+    pub const ALL: LockTargets = LockTargets {
+        keyboard: true,
+        mouse: true,
+    };
+
+    /// Rejects a lock that would block nothing.
+    pub const fn checked(self) -> Result<LockTargets, PolicyError> {
+        if self.keyboard || self.mouse {
+            Ok(self)
+        } else {
+            Err(PolicyError::NoTargets)
+        }
+    }
+}
+
+impl Default for LockTargets {
+    fn default() -> Self {
+        LockTargets::KEYBOARD
+    }
+}
+
 /// Why a lock request was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyError {
@@ -81,6 +124,8 @@ pub enum PolicyError {
     ZeroDuration,
     /// The maximum lock duration setting was zero.
     ZeroMaxLock,
+    /// Neither the keyboard nor the mouse was selected.
+    NoTargets,
 }
 
 impl std::fmt::Display for PolicyError {
@@ -88,6 +133,7 @@ impl std::fmt::Display for PolicyError {
         match self {
             PolicyError::ZeroDuration => f.write_str("requested lock duration is zero"),
             PolicyError::ZeroMaxLock => f.write_str("maximum lock duration setting is zero"),
+            PolicyError::NoTargets => f.write_str("neither keyboard nor mouse was selected"),
         }
     }
 }
@@ -273,5 +319,22 @@ mod tests {
             plan_lock(secs(10), Duration::ZERO, SafetyProfile::Dev),
             Err(PolicyError::ZeroMaxLock)
         );
+    }
+
+    #[test]
+    fn a_lock_must_target_something() {
+        let none = LockTargets {
+            keyboard: false,
+            mouse: false,
+        };
+        assert_eq!(none.checked(), Err(PolicyError::NoTargets));
+        let mouse_only = LockTargets {
+            keyboard: false,
+            mouse: true,
+        };
+        for targets in [LockTargets::KEYBOARD, LockTargets::ALL, mouse_only] {
+            assert_eq!(targets.checked(), Ok(targets));
+        }
+        assert_eq!(LockTargets::default(), LockTargets::KEYBOARD);
     }
 }
