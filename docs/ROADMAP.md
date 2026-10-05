@@ -248,8 +248,8 @@ Acceptance:
 ### M5 - Mouse and touchpad lock (§22, §23)
 
 Status: **done** (verified by Max, 2026-10-05). Verification: `cargo run -p keyclean-e2e` (S26-S32,
-S22), `--mouse-diag` (S33), and Part B of `docs/testing/manual/M5.md`. The optional Part C steps
-(8-12) weren't run.
+S22), `--mouse-diag` (S33), and Part B of `docs/testing/manual/M5.md`. Optional step 8 passed (Tab
+and Enter reach Unlock now in a mouse-only lock); steps 9-12 weren't run.
 
 Harness, 2026-10-05: **29/29 passed** in 126 s on Max's machine, including S26-S32. S33 with the
 touchpad and the Logitech mouse: 1405 raw mouse messages, 0 mouse liveness misses, nothing past the

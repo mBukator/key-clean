@@ -106,7 +106,7 @@ The drain after a lock waits for held buttons as well as held keys.
   Ctrl+Alt+Del and the other unblockable system escapes). The hard deadline and process death still
   apply.
 - In a mouse-only lock, the keyboard still works, so the window's **Unlock now** button can be reached
-  with Tab and Enter [assumption, M5 manual step].
+  with Tab and Enter [tested 2026-10-05, M5 step 8].
 - A touchpad gesture that produces raw mouse input without a hook call would end the lock as
   "mouse lock stopped early". The harness's `--mouse-diag` measures this before the manual test; if
   it happens, the rule is tuned with that data.
