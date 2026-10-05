@@ -7,7 +7,9 @@ use keyclean_win::keyclean_core::policy::DEV_MAX_HARD_DEADLINE;
 use keyclean_win::testkit::inject::{self, Stroke, vk};
 use keyclean_win::testkit::observer::Observer;
 use keyclean_win::testkit::{held, system};
-use keyclean_win::{EndReason, Engine, EngineEvent, EngineNotice, LockRequest, SessionState};
+use keyclean_win::{
+    EndReason, Engine, EngineEvent, EngineNotice, LockRequest, LockTargets, SessionState,
+};
 
 /// How long to wait for an injected event to reach (or not reach) the observer.
 pub const PROBE_WINDOW: Duration = Duration::from_millis(350);
@@ -128,6 +130,7 @@ pub fn dev_request(duration: Duration) -> LockRequest {
     LockRequest {
         duration,
         max_lock: DEV_MAX_HARD_DEADLINE,
+        targets: LockTargets::KEYBOARD,
     }
 }
 

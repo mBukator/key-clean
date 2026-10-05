@@ -1,6 +1,10 @@
-//! The `WH_KEYBOARD_LL` hook.
+//! The low-level hooks: `WH_KEYBOARD_LL` for every lock, `WH_MOUSE_LL` when the mouse is locked.
 //!
-//! The callback runs on the engine thread (the thread that installed it) whenever that thread
+//! The keyboard hook is installed for every lock, because it carries the emergency chord
+//! (invariant 1). When only the mouse is locked it lets keys through and swallows only the key that
+//! completes the chord (`keyclean_core::keystate::keyboard_phase`).
+//!
+//! Both callbacks run on the engine thread (the thread that installed them) whenever that thread
 //! waits for messages. It must return quickly: Windows silently removes a low-level hook that
 //! exceeds `LowLevelHooksTimeout` (at most 1 s since Windows 10 1709), which makes the lock fail
 //! open. So the callback only reads atomics and a thread-local `Copy` value, does fixed-size bit
@@ -10,23 +14,24 @@
 //! Shared state:
 //! - [`PHASE`], [`HARD_DEADLINE_TICKS`], [`ENGINE_HWND`]: atomics, because the watchdog thread
 //!   writes `PHASE` too.
-//! - [`LOCAL`]: the key tracker and chord state. Only the engine thread touches it (the callback
-//!   and the engine's own code), so a thread-local `Cell` is enough.
+//! - [`LOCAL`]: the key tracker, chord state and button tracker. Only the engine thread touches it
+//!   (the callbacks and the engine's own code), so a thread-local `Cell` is enough.
 //!
-//! Nothing that identifies a key leaves this module. Key codes are used for the pass/block
-//! decision and then forgotten.
+//! Nothing that identifies a key or a cursor position leaves this module. Key codes and mouse
+//! messages are used for the pass/block decision and then forgotten.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, AtomicU64, Ordering};
 
 use keyclean_core::chord::{ChordState, KeyDirection};
-use keyclean_core::keystate::{KeyTracker, Phase, Verdict};
+use keyclean_core::keystate::{KeyTracker, Phase, Verdict, keyboard_phase};
+use keyclean_core::mouse::{ButtonTracker, MouseEvent};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, PostMessageW,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    CallNextHookEx, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP, MSLLHOOKSTRUCT,
+    PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
 };
 
 use crate::msg::{WM_HOOK_CHORD, WM_HOOK_DEADLINE, WM_HOOK_DRAINED};
@@ -46,9 +51,15 @@ static SESSION_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// QPC ticks of the last event blocked while draining (a blocked key still auto-repeating or
 /// being released). The engine extends the drain while this keeps moving.
 static LAST_DRAIN_BLOCK_TICKS: AtomicU64 = AtomicU64::new(0);
-/// QPC ticks of the last `HC_ACTION` call of this session (0 = none yet). The engine compares it
-/// with keyboard Raw Input to notice a hook Windows removed or skipped (hook-liveness check).
+/// QPC ticks of the keyboard hook's last `HC_ACTION` call of this session (0 = none yet). The
+/// engine compares it with keyboard Raw Input to notice a hook Windows removed or skipped
+/// (hook-liveness check).
 static LAST_CALLBACK_TICKS: AtomicU64 = AtomicU64::new(0);
+/// The same for the mouse hook, compared with mouse Raw Input.
+static LAST_MOUSE_CALLBACK_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Whether this session locks the keyboard. False in a mouse-only lock, where the keyboard hook
+/// only watches for the emergency chord.
+static KEYBOARD_BLOCKS: AtomicBool = AtomicBool::new(true);
 /// Testkit only: milliseconds the next callback sleeps, to provoke a real `LowLevelHooksTimeout`.
 #[cfg(feature = "testkit")]
 pub(crate) static STALL_NEXT_CALLBACK_MS: std::sync::atomic::AtomicU32 =
@@ -58,6 +69,7 @@ pub(crate) static STALL_NEXT_CALLBACK_MS: std::sync::atomic::AtomicU32 =
 struct HookLocal {
     tracker: KeyTracker,
     chord: ChordState,
+    buttons: ButtonTracker,
 }
 
 impl HookLocal {
@@ -65,7 +77,13 @@ impl HookLocal {
         HookLocal {
             tracker: KeyTracker::new(),
             chord: ChordState::new(),
+            buttons: ButtonTracker::new(),
         }
+    }
+
+    /// Every blocked key press and button press has been released.
+    const fn drained(&self) -> bool {
+        self.tracker.drained() && self.buttons.drained()
     }
 }
 
@@ -112,12 +130,75 @@ fn on_key_event(vk: u32, scan: u32, flags: u32) -> Verdict {
     };
     let extended = flags & LLKHF_EXTENDED.0 != 0;
     let code = (vk & 0xFF) as u8;
+    let phase = phase_after_deadline_check();
 
-    let mut phase = Phase::from_u8(PHASE.load(Ordering::Acquire));
+    LOCAL
+        .try_with(|cell| {
+            let mut local = cell.get();
+            let fired = local
+                .chord
+                .on_key(keys::chord_key(vk, scan, extended), direction);
+            let completes_chord = fired && phase == Phase::Locked;
+            if completes_chord && transition(Phase::Locked, Phase::Draining) {
+                post_once(&END_POSTED, WM_HOOK_CHORD);
+            }
+            // The completing chord key is decided under the phase it arrived in, so it is
+            // swallowed and tracked like any other blocked press. In a mouse-only lock every other
+            // key passes.
+            let decide_as = keyboard_phase(
+                phase,
+                KEYBOARD_BLOCKS.load(Ordering::Acquire),
+                completes_chord,
+            );
+            let verdict = local.tracker.decide(decide_as, code, direction);
+            after_decision(&local, phase, verdict);
+            cell.set(local);
+            verdict
+        })
+        .unwrap_or(Verdict::Pass)
+}
 
-    // Hard deadline, enforced on every event (invariant 6). Before it, a lock in progress moves
-    // to Draining; past it, a drain still running moves to Passthrough, so the hook alone releases
-    // everything even if the watchdog has failed.
+/// The mouse hook procedure registered with `SetWindowsHookExW`.
+///
+/// # Safety
+/// Called by Windows only, with the arguments documented for `LowLevelMouseProc`.
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && lparam.0 != 0 {
+        LAST_MOUSE_CALLBACK_TICKS.store(qpc::ticks(), Ordering::Release);
+        // SAFETY: for WH_MOUSE_LL with HC_ACTION, `lparam` points to an MSLLHOOKSTRUCT that is
+        // valid for the duration of this call (LowLevelMouseProc docs). Only `mouseData` is copied
+        // out; the cursor position is never read.
+        let mouse_data = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).mouseData };
+        let event = keys::mouse_event(wparam.0 as u32, mouse_data);
+        // As in `keyboard_proc`: no panic may unwind across this FFI boundary (invariant 10).
+        let verdict = std::panic::catch_unwind(|| on_mouse_event(event)).unwrap_or(Verdict::Pass);
+        if verdict == Verdict::Block {
+            return LRESULT(1);
+        }
+    }
+    // SAFETY: forwarding the unmodified arguments to the next hook, as the docs require.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+fn on_mouse_event(event: MouseEvent) -> Verdict {
+    let phase = phase_after_deadline_check();
+    LOCAL
+        .try_with(|cell| {
+            let mut local = cell.get();
+            let verdict = local.buttons.decide(phase, event);
+            after_decision(&local, phase, verdict);
+            cell.set(local);
+            verdict
+        })
+        .unwrap_or(Verdict::Pass)
+}
+
+/// The current phase, after enforcing the hard deadline (invariant 6). Both hooks call this on
+/// every event, so either one alone releases input at the deadline (in a mouse-only lock nobody
+/// may be typing). Before it, a lock in progress moves to Draining; past it, a drain still running
+/// moves to Passthrough, so the hooks release everything even if the watchdog has failed.
+fn phase_after_deadline_check() -> Phase {
+    let phase = Phase::from_u8(PHASE.load(Ordering::Acquire));
     if matches!(phase, Phase::Arming | Phase::Locked | Phase::Draining)
         && qpc::ticks() >= HARD_DEADLINE_TICKS.load(Ordering::Acquire)
     {
@@ -128,33 +209,20 @@ fn on_key_event(vk: u32, scan: u32, flags: u32) -> Verdict {
         } else if transition(phase, Phase::Draining) {
             post_once(&END_POSTED, WM_HOOK_DEADLINE);
         }
-        phase = Phase::from_u8(PHASE.load(Ordering::Acquire));
+        return Phase::from_u8(PHASE.load(Ordering::Acquire));
     }
+    phase
+}
 
-    LOCAL
-        .try_with(|cell| {
-            let mut local = cell.get();
-            let fired = local
-                .chord
-                .on_key(keys::chord_key(vk, scan, extended), direction);
-            if fired && phase == Phase::Locked && transition(Phase::Locked, Phase::Draining) {
-                post_once(&END_POSTED, WM_HOOK_CHORD);
-            }
-            // The completing chord key is decided under the phase it arrived in, so it is
-            // swallowed and tracked like any other blocked press.
-            let verdict = local.tracker.decide(phase, code, direction);
-            if verdict == Verdict::Block && phase == Phase::Draining {
-                LAST_DRAIN_BLOCK_TICKS.store(qpc::ticks(), Ordering::Release);
-            }
-            if local.tracker.drained()
-                && Phase::from_u8(PHASE.load(Ordering::Acquire)) == Phase::Draining
-            {
-                post_once(&DRAIN_POSTED, WM_HOOK_DRAINED);
-            }
-            cell.set(local);
-            verdict
-        })
-        .unwrap_or(Verdict::Pass)
+/// Drain bookkeeping after either hook decided an event in `phase`: an event blocked while
+/// draining keeps the drain alive, and the engine is told once no blocked press is still held.
+fn after_decision(local: &HookLocal, phase: Phase, verdict: Verdict) {
+    if verdict == Verdict::Block && phase == Phase::Draining {
+        LAST_DRAIN_BLOCK_TICKS.store(qpc::ticks(), Ordering::Release);
+    }
+    if local.drained() && Phase::from_u8(PHASE.load(Ordering::Acquire)) == Phase::Draining {
+        post_once(&DRAIN_POSTED, WM_HOOK_DRAINED);
+    }
 }
 
 fn transition(from: Phase, to: Phase) -> bool {
@@ -192,17 +260,20 @@ pub(crate) fn set_engine_window(hwnd: HWND) {
 }
 
 /// Prepares the shared state for a new lock. Engine thread only, before [`install`].
-pub(crate) fn begin_arming(generation: u64, hard_deadline_ticks: u64) {
+/// `keyboard_blocks` is false for a mouse-only lock.
+pub(crate) fn begin_arming(generation: u64, hard_deadline_ticks: u64, keyboard_blocks: bool) {
     let _ = LOCAL.try_with(|cell| cell.set(HookLocal::new()));
     SESSION_GENERATION.store(generation, Ordering::Release);
     HARD_DEADLINE_TICKS.store(hard_deadline_ticks, Ordering::Release);
     END_POSTED.store(false, Ordering::Release);
     DRAIN_POSTED.store(false, Ordering::Release);
     LAST_CALLBACK_TICKS.store(0, Ordering::Release);
+    LAST_MOUSE_CALLBACK_TICKS.store(0, Ordering::Release);
+    KEYBOARD_BLOCKS.store(keyboard_blocks, Ordering::Release);
     PHASE.store(Phase::Arming as u8, Ordering::Release);
 }
 
-/// Installs the hook. Engine thread only; the thread must run a message loop.
+/// Installs the keyboard hook. Engine thread only; the thread must run a message loop.
 pub(crate) fn install() -> windows::core::Result<HHOOK> {
     // SAFETY: GetModuleHandleW(None) returns this executable's module handle without
     // transferring ownership.
@@ -210,6 +281,16 @@ pub(crate) fn install() -> windows::core::Result<HHOOK> {
     // SAFETY: `keyboard_proc` matches HOOKPROC and lives for the whole program; a global
     // low-level hook needs the module handle and thread id 0 (SetWindowsHookExW docs).
     unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), Some(module.into()), 0) }
+}
+
+/// Installs the mouse hook, after [`install`]. Engine thread only, so both callbacks share
+/// [`LOCAL`] and the message loop.
+pub(crate) fn install_mouse() -> windows::core::Result<HHOOK> {
+    // SAFETY: as in `install`.
+    let module = unsafe { GetModuleHandleW(None) }?;
+    // SAFETY: `mouse_proc` matches HOOKPROC and lives for the whole program; a global low-level
+    // hook as in `install`.
+    unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(module.into()), 0) }
 }
 
 /// Adds the keys Windows currently sees as held to the tracker, and seeds the chord detector.
@@ -286,32 +367,41 @@ pub(crate) fn last_drain_block_ticks() -> u64 {
     LAST_DRAIN_BLOCK_TICKS.load(Ordering::Acquire)
 }
 
-/// QPC ticks of the last hook call this session, or `None` if the hook hasn't been called.
+/// QPC ticks of the keyboard hook's last call this session, or `None` if it hasn't been called.
 pub(crate) fn last_callback_ticks() -> Option<u64> {
-    match LAST_CALLBACK_TICKS.load(Ordering::Acquire) {
+    nonzero(LAST_CALLBACK_TICKS.load(Ordering::Acquire))
+}
+
+/// QPC ticks of the mouse hook's last call this session, or `None` if it hasn't been called.
+pub(crate) fn last_mouse_callback_ticks() -> Option<u64> {
+    nonzero(LAST_MOUSE_CALLBACK_TICKS.load(Ordering::Acquire))
+}
+
+const fn nonzero(ticks: u64) -> Option<u64> {
+    match ticks {
         0 => None,
         t => Some(t),
     }
 }
 
-/// Whether every blocked press has been released. Engine thread only.
+/// Whether every blocked key and button press has been released. Engine thread only.
 pub(crate) fn drained() -> bool {
-    LOCAL
-        .try_with(|cell| cell.get().tracker.drained())
-        .unwrap_or(true)
+    LOCAL.try_with(|cell| cell.get().drained()).unwrap_or(true)
 }
 
-/// Removes the hook and returns the shared state to idle. Engine thread only.
+/// Removes the hooks and returns the shared state to idle. Engine thread only.
 ///
-/// Returns `Err` if Windows had already removed the hook (e.g. it timed out); input is released
+/// Returns false if Windows had already removed a hook (e.g. it timed out); input is released
 /// either way.
-pub(crate) fn uninstall(hook: HHOOK) -> windows::core::Result<()> {
+pub(crate) fn uninstall(keyboard: HHOOK, mouse: Option<HHOOK>) -> bool {
     PHASE.store(Phase::Passthrough as u8, Ordering::Release);
-    // SAFETY: `hook` came from `install` on this thread and is unhooked at most once (the caller
-    // takes it out of its Option first).
-    let result = unsafe { UnhookWindowsHookEx(hook) };
+    // SAFETY: both handles came from `install` / `install_mouse` on this thread and are unhooked
+    // at most once (the caller takes them out of their Options first).
+    let mouse_removed = mouse.is_none_or(|hook| unsafe { UnhookWindowsHookEx(hook) }.is_ok());
+    // SAFETY: as above.
+    let keyboard_removed = unsafe { UnhookWindowsHookEx(keyboard) }.is_ok();
     clear();
-    result
+    keyboard_removed && mouse_removed
 }
 
 /// Marks the hook state idle without unhooking (used when installation failed).
@@ -319,5 +409,7 @@ pub(crate) fn clear() {
     PHASE.store(PHASE_IDLE, Ordering::Release);
     HARD_DEADLINE_TICKS.store(u64::MAX, Ordering::Release);
     LAST_CALLBACK_TICKS.store(0, Ordering::Release);
+    LAST_MOUSE_CALLBACK_TICKS.store(0, Ordering::Release);
+    KEYBOARD_BLOCKS.store(true, Ordering::Release);
     let _ = LOCAL.try_with(|cell| cell.set(HookLocal::new()));
 }

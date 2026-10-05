@@ -26,7 +26,8 @@ pub use close_guard::guard_helper_windows;
 pub use device_watch::DeviceWatch;
 pub use devices::input_devices;
 pub use engine::{
-    DeviceChange, Engine, EngineEvent, EngineNotice, EngineStatus, LockRequest, safety_profile,
+    DeviceChange, DeviceClass, Engine, EngineEvent, EngineNotice, EngineStatus, LockRequest,
+    LockTargets, safety_profile,
 };
 pub use error::EngineError;
 pub use keyclean_core;

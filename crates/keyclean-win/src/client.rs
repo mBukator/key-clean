@@ -217,6 +217,7 @@ fn read_events(
         dev_cap: safety_profile() == SafetyProfile::Dev,
         session_remaining: None,
         hard_deadline_remaining: None,
+        targets: None,
     }));
 }
 
@@ -256,6 +257,7 @@ mod tests {
             dev_cap: true,
             session_remaining: None,
             hard_deadline_remaining: None,
+            targets: None,
         })
     }
 

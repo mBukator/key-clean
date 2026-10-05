@@ -23,3 +23,5 @@ pub(crate) const TIMER_COUNTDOWN: usize = 3;
 /// `SetTimer` id for the hook-liveness check: fires `LIVENESS_CHECK_DELAY` after a raw keyboard
 /// message, to confirm the hook saw the same key.
 pub(crate) const TIMER_HOOK_CHECK: usize = 4;
+/// `SetTimer` id for the mouse hook's liveness check: the same, after a raw mouse message.
+pub(crate) const TIMER_MOUSE_HOOK_CHECK: usize = 5;

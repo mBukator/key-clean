@@ -3,7 +3,8 @@
 use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
-    DeviceChange, EndReason, EngineError, EngineEvent, EngineNotice, SessionState, SystemTransition,
+    DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, SessionState,
+    SystemTransition,
 };
 use serde::Serialize;
 
@@ -117,8 +118,10 @@ impl StatusDto {
             }
             EngineEvent::DeviceChanged(change) => {
                 self.notice = Some(match change {
-                    DeviceChange::Arrived => "notice.keyboard_connected",
-                    DeviceChange::Removed => "notice.keyboard_disconnected",
+                    DeviceChange::Arrived(DeviceClass::Keyboard) => "notice.keyboard_connected",
+                    DeviceChange::Removed(DeviceClass::Keyboard) => "notice.keyboard_disconnected",
+                    DeviceChange::Arrived(DeviceClass::Mouse) => "notice.mouse_connected",
+                    DeviceChange::Removed(DeviceClass::Mouse) => "notice.mouse_disconnected",
                 });
             }
         }
@@ -199,6 +202,7 @@ fn state_name(state: SessionState) -> &'static str {
 fn notice_key(notice: EngineNotice) -> Option<&'static str> {
     match notice {
         EngineNotice::ElevatedWindowBypass => Some("notice.elevated_window"),
+        EngineNotice::ElevatedWindowMouseBypass => Some("notice.elevated_window_mouse"),
         EngineNotice::LivenessCheckUnavailable => Some("notice.liveness_unavailable"),
         EngineNotice::HookAlreadyRemoved
         | EngineNotice::DrainTimedOut
@@ -238,6 +242,7 @@ mod tests {
             dev_cap: true,
             session_remaining,
             hard_deadline_remaining: session_remaining.map(|d| d + Duration::from_secs(10)),
+            targets: None,
         })
     }
 
@@ -356,6 +361,10 @@ mod tests {
             EngineError::MessageLoop,
             EngineError::EngineProcess(String::new()),
             EngineError::HookLost,
+            EngineError::MouseHookLost,
+            EngineError::InvalidRequest(
+                keyclean_win::keyclean_core::policy::PolicyError::NoTargets,
+            ),
         ];
         for e in errors {
             assert!(
@@ -411,9 +420,21 @@ mod tests {
     fn device_changes_during_a_lock_set_a_notice() {
         let mut dto = StatusDto::initial(true);
         dto.apply(&status(SessionState::Locked));
-        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed(
+            DeviceClass::Mouse,
+        )));
+        assert_eq!(dto.notice, Some("notice.mouse_disconnected"));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived(
+            DeviceClass::Mouse,
+        )));
+        assert_eq!(dto.notice, Some("notice.mouse_connected"));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed(
+            DeviceClass::Keyboard,
+        )));
         assert_eq!(dto.notice, Some("notice.keyboard_disconnected"));
-        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived(
+            DeviceClass::Keyboard,
+        )));
         assert_eq!(dto.notice, Some("notice.keyboard_connected"));
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["notice"], "notice.keyboard_connected");
