@@ -43,7 +43,7 @@
     "devices.capability.supported": "Supported",
     "devices.capability.limited": "Limited",
     "devices.capability.unsupported": "Unsupported",
-    "devices.note.touchpad": "Locked together with the mouse. Some touchpad gestures may still work during a lock.",
+    "devices.note.touchpad": "Locked together with the mouse, except for gestures: two-finger scrolling, pinch, and three- and four-finger swipes still work during a lock.",
     "devices.note.touchscreen": "KeyClean can't lock touchscreens.",
     "devices.note.pen": "KeyClean can't lock pens.",
     "devices.lockScope": "A lock covers every connected keyboard, and every mouse and touchpad when you include them.",
