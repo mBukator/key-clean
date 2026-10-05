@@ -3,8 +3,8 @@
 use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
-    DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, SessionState,
-    SystemTransition,
+    DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, LockTargets,
+    SessionState, SystemTransition,
 };
 use serde::Serialize;
 
@@ -41,6 +41,23 @@ impl From<&EngineError> for ErrorDto {
     }
 }
 
+/// What a lock blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsDto {
+    keyboard: bool,
+    mouse: bool,
+}
+
+impl From<LockTargets> for TargetsDto {
+    fn from(t: LockTargets) -> Self {
+        TargetsDto {
+            keyboard: t.keyboard,
+            mouse: t.mouse,
+        }
+    }
+}
+
 /// What the main window displays.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +71,8 @@ pub struct StatusDto {
     countdown_secs: Option<u64>,
     /// The latest notice to show (a string key), until the next lock starts.
     notice: Option<&'static str>,
+    /// What the current session blocks, or the last one once it ends; `None` before any lock.
+    targets: Option<TargetsDto>,
 }
 
 impl StatusDto {
@@ -67,7 +86,14 @@ impl StatusDto {
             engine_available: false,
             countdown_secs: None,
             notice: None,
+            targets: None,
         }
+    }
+
+    /// Whether the current or last session left the keyboard free (the engine then only watches
+    /// it for the emergency chord). Unknown targets count as a keyboard lock.
+    fn keyboard_free(&self) -> bool {
+        self.targets.is_some_and(|t| !t.keyboard)
     }
 
     /// Records whether the engine started, and why not.
@@ -81,6 +107,7 @@ impl StatusDto {
         self.set_engine(true, None);
         self.state = state_name(SessionState::Idle);
         self.countdown_secs = None;
+        self.targets = None;
         self.notice = Some("notice.engine_restarted");
     }
 
@@ -98,6 +125,10 @@ impl StatusDto {
                     // A new lock starts: earlier notices no longer apply.
                     self.notice = None;
                 }
+                if let Some(targets) = status.targets {
+                    // Kept after the session ends, so its late errors and notices still read right.
+                    self.targets = Some(TargetsDto::from(targets));
+                }
                 self.state = state_name(status.state);
                 self.dev_cap = status.dev_cap;
                 self.countdown_secs = match status.state {
@@ -110,14 +141,31 @@ impl StatusDto {
             EngineEvent::SessionEnded { reason } => {
                 self.last_end_reason = Some(end_reason_name(*reason));
             }
-            EngineEvent::Error(e) => self.error = Some(ErrorDto::from(e)),
+            EngineEvent::Error(e) => {
+                let mut dto = ErrorDto::from(e);
+                if matches!(e, EngineError::HookLost) && self.keyboard_free() {
+                    // The keyboard hook only watched for the emergency chord.
+                    dto.message_key = "error.chord_hook_lost".to_owned();
+                }
+                self.error = Some(dto);
+            }
             EngineEvent::Notice(notice) => {
-                if let Some(key) = notice_key(*notice) {
+                let key = match notice {
+                    EngineNotice::ElevatedWindowBypass if self.keyboard_free() => {
+                        Some("notice.elevated_window_chord")
+                    }
+                    _ => notice_key(*notice),
+                };
+                if let Some(key) = key {
                     self.notice = Some(key);
                 }
             }
             EngineEvent::DeviceChanged(change) => {
+                let keyboard_free = self.keyboard_free();
                 self.notice = Some(match change {
+                    DeviceChange::Arrived(DeviceClass::Keyboard) if keyboard_free => {
+                        "notice.keyboard_connected_unlocked"
+                    }
                     DeviceChange::Arrived(DeviceClass::Keyboard) => "notice.keyboard_connected",
                     DeviceChange::Removed(DeviceClass::Keyboard) => "notice.keyboard_disconnected",
                     DeviceChange::Arrived(DeviceClass::Mouse) => "notice.mouse_connected",
@@ -244,6 +292,111 @@ mod tests {
             hard_deadline_remaining: session_remaining.map(|d| d + Duration::from_secs(10)),
             targets: None,
         })
+    }
+
+    fn status_targets(state: SessionState, targets: Option<LockTargets>) -> EngineEvent {
+        EngineEvent::Status(EngineStatus {
+            state,
+            dev_cap: true,
+            session_remaining: None,
+            hard_deadline_remaining: None,
+            targets,
+        })
+    }
+
+    const MOUSE_ONLY: LockTargets = LockTargets {
+        keyboard: false,
+        mouse: true,
+    };
+
+    #[test]
+    fn targets_serialize_camel_case_and_outlive_the_session() {
+        let mut dto = StatusDto::initial(true);
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(json["targets"].is_null(), "no lock yet");
+
+        dto.apply(&status_targets(
+            SessionState::Starting,
+            Some(LockTargets::ALL),
+        ));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            json["targets"],
+            serde_json::json!({ "keyboard": true, "mouse": true })
+        );
+
+        dto.apply(&status_targets(SessionState::Idle, None));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            json["targets"],
+            serde_json::json!({ "keyboard": true, "mouse": true }),
+            "kept after the lock"
+        );
+
+        dto.apply(&status_targets(SessionState::Starting, Some(MOUSE_ONLY)));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(
+            json["targets"],
+            serde_json::json!({ "keyboard": false, "mouse": true })
+        );
+
+        dto.set_engine_restarted();
+        assert_eq!(dto.targets, None);
+    }
+
+    #[test]
+    fn keyboard_arrival_while_the_keyboard_is_free() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status_targets(SessionState::Locked, Some(MOUSE_ONLY)));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived(
+            DeviceClass::Keyboard,
+        )));
+        assert_eq!(dto.notice, Some("notice.keyboard_connected_unlocked"));
+
+        dto.apply(&status_targets(SessionState::Idle, None));
+        dto.apply(&status_targets(
+            SessionState::Locked,
+            Some(LockTargets::ALL),
+        ));
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Arrived(
+            DeviceClass::Keyboard,
+        )));
+        assert_eq!(dto.notice, Some("notice.keyboard_connected"));
+    }
+
+    #[test]
+    fn hook_lost_while_the_keyboard_is_free_names_the_chord() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status_targets(SessionState::Locked, Some(MOUSE_ONLY)));
+        dto.apply(&status_targets(SessionState::Idle, None));
+        dto.apply(&EngineEvent::Error(EngineError::HookLost));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["error"]["messageKey"], "error.chord_hook_lost");
+        assert!(json["error"]["details"].is_string());
+
+        dto.apply(&status_targets(
+            SessionState::Locked,
+            Some(LockTargets::KEYBOARD),
+        ));
+        dto.apply(&EngineEvent::Error(EngineError::HookLost));
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["error"]["messageKey"], "error.hook_lost");
+    }
+
+    #[test]
+    fn elevated_window_while_the_keyboard_is_free_names_the_chord() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status_targets(SessionState::Locked, Some(MOUSE_ONLY)));
+        dto.apply(&EngineEvent::Notice(EngineNotice::ElevatedWindowBypass));
+        assert_eq!(dto.notice, Some("notice.elevated_window_chord"));
+
+        dto.apply(&status_targets(SessionState::Idle, None));
+        dto.apply(&status_targets(
+            SessionState::Locked,
+            Some(LockTargets::ALL),
+        ));
+        dto.apply(&EngineEvent::Notice(EngineNotice::ElevatedWindowBypass));
+        assert_eq!(dto.notice, Some("notice.elevated_window"));
     }
 
     #[test]
@@ -466,6 +619,7 @@ mod tests {
             serde_json::from_str(include_str!("../../locales/en/strings.json")).unwrap();
         let mut keys: Vec<&str> = [
             EngineNotice::ElevatedWindowBypass,
+            EngineNotice::ElevatedWindowMouseBypass,
             EngineNotice::LivenessCheckUnavailable,
         ]
         .into_iter()
@@ -473,8 +627,13 @@ mod tests {
         .collect();
         keys.extend([
             "notice.keyboard_connected",
+            "notice.keyboard_connected_unlocked",
             "notice.keyboard_disconnected",
+            "notice.mouse_connected",
+            "notice.mouse_disconnected",
+            "notice.elevated_window_chord",
             "notice.engine_restarted",
+            "error.chord_hook_lost",
         ]);
         for key in keys {
             assert!(strings.contains_key(key), "missing {key}");

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-unlock-input"
+description = "Enables the unlock_input command without any pre-configured scope."
+commands.allow = ["unlock_input"]
+
+[[permission]]
+identifier = "deny-unlock-input"
+description = "Denies the unlock_input command without any pre-configured scope."
+commands.deny = ["unlock_input"]

@@ -5,8 +5,8 @@
     "windows": ["main"],
     "permissions": [
         "core:event:default",
-        "allow-lock-keyboard",
-        "allow-unlock-keyboard",
+        "allow-lock-input",
+        "allow-unlock-input",
         "allow-get-lock-options",
         "allow-get-status",
         "allow-list-devices"

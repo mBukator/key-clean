@@ -22,7 +22,9 @@ use keyclean_win::keyclean_core::policy::SafetyProfile;
 use keyclean_win::keyclean_core::presets;
 use keyclean_win::keyclean_core::restart::RestartBudget;
 use keyclean_win::keyclean_core::time::MonoTime;
-use keyclean_win::{EngineClient, EngineError, EngineEvent, LockRequest, safety_profile};
+use keyclean_win::{
+    EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
+};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
@@ -61,25 +63,30 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Locks for `seconds`, which must be one of the presets. The engine still applies the safety
-/// policy (max lock, hard deadline, debug dev cap).
+/// Locks the keyboard, the mouse, or both for `seconds`, which must be one of the presets. The
+/// engine still applies the safety policy (max lock, hard deadline, debug dev cap) and rejects a
+/// lock that blocks nothing.
 #[tauri::command]
-fn lock_keyboard(engine: State<'_, EngineSlot>, seconds: u64) -> Result<(), ErrorDto> {
+fn lock_input(
+    engine: State<'_, EngineSlot>,
+    seconds: u64,
+    keyboard: bool,
+    mouse: bool,
+) -> Result<(), ErrorDto> {
     let duration = Duration::from_secs(seconds);
     if !presets::is_preset(duration) {
         return Err(ErrorDto::not_a_preset(seconds));
     }
+    let request = LockRequest::new(duration).with_targets(LockTargets { keyboard, mouse });
     match guard(&engine.0).as_ref() {
-        Some(engine) => engine
-            .lock(LockRequest::new(duration))
-            .map_err(|e| ErrorDto::from(&e)),
+        Some(engine) => engine.lock(request).map_err(|e| ErrorDto::from(&e)),
         None => Err(ErrorDto::from(&EngineError::NotRunning)),
     }
 }
 
 /// Asks the engine to end the current lock now (`UserRequest`).
 #[tauri::command]
-fn unlock_keyboard(engine: State<'_, EngineSlot>) -> Result<(), ErrorDto> {
+fn unlock_input(engine: State<'_, EngineSlot>) -> Result<(), ErrorDto> {
     match guard(&engine.0).as_ref() {
         Some(engine) => engine.unlock().map_err(|e| ErrorDto::from(&e)),
         None => Err(ErrorDto::from(&EngineError::NotRunning)),
@@ -313,8 +320,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            lock_keyboard,
-            unlock_keyboard,
+            lock_input,
+            unlock_input,
             get_lock_options,
             get_status,
             list_devices
