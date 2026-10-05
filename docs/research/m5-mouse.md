@@ -60,14 +60,14 @@ machine, [assumption] not yet verified.
 
 To fill in from Part A and M5 steps 2 and 7:
 
-| Question                                        | Result |
-| ----------------------------------------------- | ------ |
-| Cursor frozen by blocking `WM_MOUSEMOVE`        |        |
-| Horizontal wheel reaches the hook               |        |
-| Injected mouse input produces mouse `WM_INPUT`  |        |
-| Touchpad move / tap / click blocked             |        |
-| Two-finger scroll blocked                       |        |
-| Three- and four-finger swipes blocked           |        |
-| Pinch blocked                                   |        |
-| Gestures cause liveness misses (`--mouse-diag`) |        |
-| Notepad menu bar after Ctrl+Alt+K (mouse-only)  |        |
+| Question                                        | Result                                                                                               |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Cursor frozen by blocking `WM_MOUSEMOVE`        | Yes [tested 2026-10-05, harness S26]                                                                 |
+| Horizontal wheel reaches the hook               | Yes, injected [tested 2026-10-05: the harness startup check found every probe kind, S26 blocked all] |
+| Injected mouse input produces mouse `WM_INPUT`  | Yes [tested 2026-10-05, S31: 15 messages]                                                            |
+| Touchpad move / tap / click blocked             |                                                                                                      |
+| Two-finger scroll blocked                       |                                                                                                      |
+| Three- and four-finger swipes blocked           |                                                                                                      |
+| Pinch blocked                                   |                                                                                                      |
+| Gestures cause liveness misses (`--mouse-diag`) | Touchpad: no, 0 misses in 1405 raw messages over 15 s [tested 2026-10-05, S33]                       |
+| Notepad menu bar after Ctrl+Alt+K (mouse-only)  |                                                                                                      |

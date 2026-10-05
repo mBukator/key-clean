@@ -250,6 +250,9 @@ Acceptance:
 Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
 (S26-S32, S22), `--mouse-diag` (S33), and Part B of `docs/testing/manual/M5.md`.
 
+Harness, 2026-10-05: **29/29 passed** in 126 s on Max's machine, including S26-S32. S33 with the
+touchpad: 1405 raw mouse messages, 0 mouse liveness misses, nothing past the lock. Part B pending.
+
 Done in code (ADR 0013, research note `docs/research/m5-mouse.md`):
 
 - **Targets.** A lock blocks the keyboard, the mouse and touchpad, or both. The window has two
