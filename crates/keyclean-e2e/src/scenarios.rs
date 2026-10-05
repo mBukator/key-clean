@@ -1,24 +1,28 @@
-//! The automated M1-M3 checks. Each maps to steps in docs/testing/manual/M1.md, or to
-//! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3".
+//! The automated M1-M5 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3". The M5 checks (mouse
+//! and touchpad lock, ADR 0013) are marked "M5".
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use keyclean_win::keyclean_core::countdown;
 use keyclean_win::testkit::inject::{Stroke, vk};
-use keyclean_win::testkit::observer::Observer;
+use keyclean_win::testkit::mouse::{self, Button, MouseInput};
+use keyclean_win::testkit::observer::{MouseKind, Observer};
 use keyclean_win::testkit::{self, held, system};
 use keyclean_win::{
-    EndReason, EngineClient, EngineEvent, EngineNotice, SessionState, SystemTransition,
+    EndReason, EngineClient, EngineEvent, EngineNotice, LockTargets, SessionState, SystemTransition,
 };
 
 use crate::harness::{
-    EngineRig, PROBE_WINDOW, dev_request, expect_no_raw_input_registration, expect_no_stuck_keys,
-    expect_probes_blocked, expect_probes_pass, expect_reason, probe_passes, send, sleep,
-    wait_until,
+    CursorGuard, EngineRig, MOUSE_ONLY, PROBE_WINDOW, dev_request, expect_mouse_probes_blocked,
+    expect_mouse_probes_pass, expect_no_held_buttons, expect_no_raw_input_registration,
+    expect_no_stuck_keys, expect_probes_blocked, expect_probes_pass, expect_reason, probe_passes,
+    release_mouse_buttons, send, send_mouse, sleep, unusable_probes_note, wait_until,
 };
 
 /// Result of one scenario.
@@ -119,6 +123,42 @@ pub fn engine_scenarios() -> Vec<Scenario> {
             name: "A failed hook install locks nothing and says so",
             run: install_fails,
         },
+        Scenario {
+            id: "S26",
+            steps: "M5",
+            name: "Keyboard+mouse lock blocks every mouse event, Ctrl+Alt+K unlocks",
+            run: mouse_chord_unlock,
+        },
+        Scenario {
+            id: "S27",
+            steps: "M5",
+            name: "Mouse-only lock: keys pass, Ctrl+Alt+K unlocks without K reaching Windows",
+            run: mouse_only_chord,
+        },
+        Scenario {
+            id: "S28",
+            steps: "M5",
+            name: "Mouse-only lock: the timer releases on time",
+            run: mouse_only_timer,
+        },
+        Scenario {
+            id: "S29",
+            steps: "M5",
+            name: "Mouse-only lock: the hard deadline releases it while only the mouse moves",
+            run: mouse_only_deadline,
+        },
+        Scenario {
+            id: "S31",
+            steps: "M5",
+            name: "A silently removed mouse hook is detected and reported",
+            run: mouse_hook_lost,
+        },
+        Scenario {
+            id: "S32",
+            steps: "M5",
+            name: "A failed mouse hook install locks nothing and says so",
+            run: mouse_install_fails,
+        },
         // Last of the in-process checks: every session above must have removed its Raw Input
         // registration.
         Scenario {
@@ -147,6 +187,12 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
             steps: "8",
             name: "Killing lock_smoke mid-lock releases input",
             run: kill_lock_smoke,
+        },
+        Scenario {
+            id: "S30",
+            steps: "M5",
+            name: "Killing lock_smoke --mouse mid-lock releases the mouse",
+            run: kill_lock_smoke_mouse,
         },
         Scenario {
             id: "S19",
@@ -194,6 +240,16 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
         });
     }
     list
+}
+
+/// S33, opt-in (`--mouse-diag`): what touchpad gestures do during a mouse-only lock.
+pub fn mouse_diag_scenario() -> Scenario {
+    Scenario {
+        id: "S33",
+        steps: "diagnostic",
+        name: "Touchpad gestures during a mouse-only lock (diagnostic)",
+        run: mouse_diagnostic,
+    }
 }
 
 pub fn session_lock_scenario() -> Scenario {
@@ -1161,9 +1217,35 @@ fn install_fails(ctx: &mut Ctx<'_>) -> Outcome {
 }
 
 /// S22: the engine registers Raw Input only during a session (invariant 4). The device watch the
-/// app runs at idle (ADR 0012) is running too: it must not count as an input registration.
+/// app runs at idle (ADR 0012) is running too: it must not count as an input registration. A short
+/// mouse-only lock runs first, so the mouse registration (ADR 0013) must be gone as well.
 fn idle_registration(ctx: &mut Ctx<'_>) -> Outcome {
     ctx.rig.ensure_idle();
+    let mut mouse_lock = || -> Result<usize, String> {
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(2), MOUSE_ONLY)?;
+        let during = system::registered_raw_input_count();
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(6))?;
+        expect_reason(&ended, EndReason::Timeout)?;
+        match during {
+            // Keyboards (for the chord's liveness check) and mice.
+            Some(2) => Ok(2),
+            other => Err(format!(
+                "a mouse-only lock registered {other:?} Raw Input device class(es), expected \
+                 exactly 2"
+            )),
+        }
+    };
+    let during = mouse_lock();
+    ctx.rig.ensure_idle();
+    let during = match during {
+        Ok(n) => n,
+        Err(e) => return Outcome::Fail(e),
+    };
+    if let Err(e) = expect_no_raw_input_registration() {
+        return Outcome::Fail(format!("after a mouse-only lock: {e}"));
+    }
     let (changed, _unused) = std::sync::mpsc::channel();
     let watch = match keyclean_win::DeviceWatch::start(changed) {
         Ok(watch) => watch,
@@ -1173,8 +1255,10 @@ fn idle_registration(ctx: &mut Ctx<'_>) -> Outcome {
     drop(watch);
     result
         .map(|()| {
-            "GetRegisteredRawInputDevices reports none after every session and with the device watch running"
-                .to_string()
+            format!(
+                "GetRegisteredRawInputDevices reports none after every session (a mouse-only lock \
+                 had {during}) and with the device watch running"
+            )
         })
         .into()
 }
@@ -1553,5 +1637,462 @@ pub fn raw_input_diagnostic() -> Outcome {
             "raw input lost after: {}; {detail}",
             broken.join(", ")
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// M5: mouse and touchpad lock (ADR 0013)
+// ---------------------------------------------------------------------------------------------
+
+/// Cleanup after a mouse scenario: releases any button the engine may still hold in its drain,
+/// returns the engine to idle and releases any key left down.
+fn finish_mouse(ctx: &mut Ctx<'_>) {
+    release_mouse_buttons();
+    ctx.rig.ensure_idle();
+    release_mouse_buttons();
+}
+
+/// Fails unless input of both kinds gets through, no watched key is stuck and no button is held.
+fn expect_all_input_back(observer: &Observer) -> Result<(), String> {
+    expect_mouse_probes_pass(observer)?;
+    expect_probes_pass(observer)?;
+    expect_no_stuck_keys()?;
+    expect_no_held_buttons()
+}
+
+/// What the engine's Raw Input sink saw from mice, for failure messages.
+fn raw_mouse_note(before: u64) -> String {
+    let seen = testkit::raw_mouse_seen().saturating_sub(before);
+    if seen == 0 {
+        "the engine saw no mouse WM_INPUT at all".into()
+    } else {
+        format!("the engine saw {seen} mouse WM_INPUT message(s)")
+    }
+}
+
+/// S26: a keyboard+mouse lock blocks every kind of mouse event and keeps the cursor still;
+/// Ctrl+Alt+K ends it. Then a press held across the chord: its release must be swallowed (the
+/// observer sees none) and the session must still end without the drain timing out.
+fn mouse_chord_unlock(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(10), LockTargets::ALL)?;
+        expect_probes_blocked(ctx.observer)?;
+        expect_mouse_probes_blocked(ctx.observer)?;
+        send(&chord_strokes(&CHORD))?;
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(3))?;
+        expect_reason(&ended, EndReason::Emergency)?;
+        expect_all_input_back(ctx.observer)?;
+
+        // A left press during the lock, still held when the chord ends it.
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(10), LockTargets::ALL)?;
+        ctx.observer.reset();
+        send_mouse(&[MouseInput::Down(Button::Left)])?;
+        sleep(Duration::from_millis(100));
+        send(&chord_strokes(&CHORD))?;
+        sleep(Duration::from_millis(300));
+        send_mouse(&[MouseInput::Up(Button::Left)])?;
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(5))?;
+        expect_reason(&ended, EndReason::Emergency)?;
+        // A leaked release could still be on its way to the observer.
+        sleep(PROBE_WINDOW);
+        let (downs, ups) = (
+            ctx.observer.mouse(MouseKind::LeftDown),
+            ctx.observer.mouse(MouseKind::LeftUp),
+        );
+        if downs + ups > 0 {
+            return Err(format!(
+                "the left button held across the unlock reached Windows ({downs} down, {ups} up)"
+            ));
+        }
+        if ended.notices.contains(&EngineNotice::DrainTimedOut) {
+            return Err("the drain timed out instead of ending on the left release".into());
+        }
+        expect_all_input_back(ctx.observer)?;
+        Ok(format!(
+            "every mouse probe blocked, cursor still, Ctrl+Alt+K unlocked; a press held across \
+             the chord had its release swallowed and the session ended cleanly{}",
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S27: in a mouse-only lock keys pass and the mouse is blocked. Ctrl+Alt+K ends it; Ctrl and Alt
+/// reach Windows, but K, which completes the chord, doesn't (neither press nor release).
+fn mouse_only_chord(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(10), MOUSE_ONLY)?;
+        for key in [vk::F13, vk::F13 + 1] {
+            if !probe_passes(ctx.observer, key)? {
+                return Err("a key probe was blocked during a mouse-only lock".into());
+            }
+        }
+        expect_mouse_probes_blocked(ctx.observer)?;
+        ctx.observer.reset();
+        send(&chord_strokes(&CHORD))?;
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(3))?;
+        expect_reason(&ended, EndReason::Emergency)?;
+        let modifiers_seen = wait_until(PROBE_WINDOW, || {
+            [vk::LCONTROL, vk::LMENU]
+                .iter()
+                .all(|&k| ctx.observer.downs(k) > 0 && ctx.observer.ups(k) > 0)
+        });
+        if !modifiers_seen {
+            return Err(format!(
+                "Ctrl and Alt should pass in a mouse-only lock; seen: Ctrl {} down / {} up, Alt \
+                 {} down / {} up",
+                ctx.observer.downs(vk::LCONTROL),
+                ctx.observer.ups(vk::LCONTROL),
+                ctx.observer.downs(vk::LMENU),
+                ctx.observer.ups(vk::LMENU)
+            ));
+        }
+        let (k_downs, k_ups) = (ctx.observer.downs(vk::K), ctx.observer.ups(vk::K));
+        if k_downs + k_ups > 0 {
+            return Err(format!(
+                "K, which completed the chord, reached Windows ({k_downs} down, {k_ups} up)"
+            ));
+        }
+        expect_all_input_back(ctx.observer)?;
+        Ok(format!(
+            "keys passed, mouse blocked; Ctrl+Alt+K unlocked with Ctrl and Alt passing and K \
+             swallowed{}",
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S28: a 3 s mouse-only lock ends on its timer.
+fn mouse_only_timer(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(3), MOUSE_ONLY)?;
+        expect_mouse_probes_blocked(ctx.observer)?;
+        let ended = ctx.rig.wait_ended(since, Duration::from_secs(8))?;
+        expect_reason(&ended, EndReason::Timeout)?;
+        let secs = ended.after.as_secs_f64();
+        if !(2.9..=3.8).contains(&secs) {
+            return Err(format!("released after {secs:.2} s (expected about 3 s)"));
+        }
+        expect_all_input_back(ctx.observer)?;
+        Ok(format!(
+            "3 s mouse-only lock released after {secs:.2} s{}",
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S29: a mouse-only lock with no session timer, while only the mouse moves (a tagged move every
+/// 50 ms, alternating left and right; nobody types). The hard deadline must end it. As in S16, the
+/// harness can't tell whether the mouse hook's per-event check or the watchdog got there first;
+/// either one alone must be enough (invariant 6).
+fn mouse_only_deadline(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        // Dev hard deadline for a 3 s lock: 3 s + 10 s grace = 13 s.
+        let since = ctx
+            .rig
+            .lock_without_session_timer_with(Duration::from_secs(3), MOUSE_ONLY)?;
+        let stop = AtomicBool::new(false);
+        let (ended, moves) = std::thread::scope(|scope| {
+            let injector = scope.spawn(|| {
+                let mut sent = 0u32;
+                let mut dx = 10;
+                while !stop.load(Ordering::Acquire) {
+                    if mouse::send(&[MouseInput::Move { dx, dy: 0 }]).is_ok() {
+                        sent += 1;
+                    }
+                    dx = -dx;
+                    sleep(Duration::from_millis(50));
+                }
+                sent
+            });
+            // No `?` in here: the injector must always be told to stop before the scope joins it.
+            let ended = ctx.rig.wait_ended(since, Duration::from_secs(18));
+            stop.store(true, Ordering::Release);
+            (ended, injector.join().unwrap_or(0))
+        });
+        let ended = ended?;
+        expect_reason(&ended, EndReason::HardDeadline)?;
+        let secs = ended.after.as_secs_f64();
+        if !(12.9..=14.0).contains(&secs) {
+            return Err(format!("released after {secs:.2} s (expected about 13 s)"));
+        }
+        expect_all_input_back(ctx.observer)?;
+        Ok(format!(
+            "released by the hard deadline after {secs:.2} s while {moves} mouse moves were sent{}",
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S30: S9 with `lock_smoke --mouse`: killing the process mid-lock must release the mouse too.
+fn kill_lock_smoke_mouse(ctx: &mut Ctx<'_>) -> Outcome {
+    let Some(exe) = target_dir().map(|d| d.join("examples").join("lock_smoke.exe")) else {
+        return Outcome::Skip("can't locate the target directory".into());
+    };
+    if !exe.exists() {
+        return Outcome::Skip(
+            "build it first: cargo build -p keyclean-win --example lock_smoke".into(),
+        );
+    }
+    let _cursor = CursorGuard::save();
+    let run = || -> Result<Outcome, String> {
+        let child = Command::new(&exe)
+            .arg("--mouse")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("couldn't start lock_smoke: {e}"))?;
+        let mut guard = Guard(child);
+        let stdout = guard.0.stdout.take().ok_or("no stdout")?;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.starts_with("Keyboard, mouse and touchpad locked") {
+                    let _ = tx.send(true);
+                } else if line.starts_with("Keyboard locked") {
+                    let _ = tx.send(false);
+                }
+            }
+        });
+        let mouse_locked = rx
+            .recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "lock_smoke didn't report a lock within 10 s".to_string())?;
+        if !mouse_locked {
+            // Built before the mouse lock: it ignores --mouse. Kill it (the guard does) and skip.
+            return Ok(Outcome::Skip(
+                "lock_smoke.exe predates --mouse; rebuild it: cargo build -p keyclean-win \
+                 --example lock_smoke"
+                    .into(),
+            ));
+        }
+        wait_blocked(ctx.observer, Duration::from_secs(2))?;
+        expect_mouse_probes_blocked(ctx.observer)?;
+        guard.0.kill().map_err(|e| format!("kill failed: {e}"))?;
+        let killed = Instant::now();
+        if !wait_exit(&mut guard.0, Duration::from_secs(3)) {
+            return Err("lock_smoke didn't exit after kill".into());
+        }
+        expect_all_input_back(ctx.observer)?;
+        Ok(Outcome::Pass(format!(
+            "mouse and keys back {} ms after the kill{}",
+            killed.elapsed().as_millis(),
+            unusable_probes_note()
+        )))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    release_mouse_buttons();
+    result.unwrap_or_else(Outcome::Fail)
+}
+
+/// S31: the engine's mouse hook disappears without the engine knowing. The next mouse move gets
+/// through; the mouse liveness check must end the lock with `error.mouse_hook_lost`. Relies on
+/// injected mouse moves producing mouse `WM_INPUT`, as S17 does for keys.
+fn mouse_hook_lost(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        let raw_before = testkit::raw_mouse_seen();
+        ctx.rig
+            .lock_with_and_wait(Duration::from_secs(10), LockTargets::ALL)?;
+        let registered = system::registered_raw_input_count();
+        expect_mouse_probes_blocked(ctx.observer)?;
+        let raw_while_blocking = testkit::raw_mouse_seen().saturating_sub(raw_before);
+        ctx.rig
+            .engine()
+            .testkit_drop_mouse_hook()
+            .map_err(|e| e.details())?;
+        sleep(Duration::from_millis(100));
+        ctx.observer.reset();
+        let moved = Instant::now();
+        send_mouse(&[
+            MouseInput::Move { dx: 10, dy: 0 },
+            MouseInput::Move { dx: -10, dy: 0 },
+        ])?;
+        if !wait_until(PROBE_WINDOW, || ctx.observer.mouse(MouseKind::Move) > 0) {
+            return Err("a mouse move was still blocked after the mouse hook was removed".into());
+        }
+        let diag = || {
+            format!(
+                "registrations during the lock: {registered:?}; mouse WM_INPUT while the hook \
+                 blocked: {raw_while_blocking}; {}",
+                raw_mouse_note(raw_before)
+            )
+        };
+        let ended = ctx
+            .rig
+            .wait_ended_with_errors(moved, Duration::from_secs(3))
+            .map_err(|e| format!("{e}; {}", diag()))?;
+        expect_reason(&ended, EndReason::EngineError).map_err(|e| format!("{e}; {}", diag()))?;
+        if !ended.errors.iter().any(|k| k == "error.mouse_hook_lost") {
+            return Err(format!(
+                "ended without error.mouse_hook_lost (errors: {:?}); {}",
+                ended.errors,
+                diag()
+            ));
+        }
+        if ended.after > HOOK_LOST_LIMIT {
+            return Err(format!(
+                "detected only {} ms after the leaked move (limit {} ms)",
+                ended.after.as_millis(),
+                HOOK_LOST_LIMIT.as_millis()
+            ));
+        }
+        expect_all_input_back(ctx.observer)?;
+        expect_no_raw_input_registration()?;
+        Ok(format!(
+            "lock ended {} ms after the first leaked move; {}{}",
+            ended.after.as_millis(),
+            raw_mouse_note(raw_before),
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S32: Windows refuses the mouse hook after the keyboard hook went in (forced by the test kit).
+/// Nothing may be locked: the session never reports Locked, the keyboard hook comes out again at
+/// once, no Raw Input stays registered, and the next keyboard+mouse lock works.
+fn mouse_install_fails(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    let mut run = || -> Result<String, String> {
+        ctx.rig.engine().testkit_fail_next_mouse_install();
+        let since = ctx
+            .rig
+            .lock_with(Duration::from_secs(3), LockTargets::ALL)?;
+        let ended = ctx
+            .rig
+            .wait_ended_with_errors(since, Duration::from_secs(3))?;
+        expect_reason(&ended, EndReason::EngineError)?;
+        if !ended.errors.iter().any(|k| k == "error.hook_install") {
+            return Err(format!(
+                "ended without error.hook_install (errors: {:?})",
+                ended.errors
+            ));
+        }
+        if ended.saw_locked {
+            return Err("the session reported Locked although the mouse hook failed".into());
+        }
+        expect_probes_pass(ctx.observer)
+            .map_err(|e| format!("keys blocked after the failed install: {e}"))?;
+        expect_mouse_probes_pass(ctx.observer)?;
+        expect_no_raw_input_registration()?;
+        // The engine must still lock normally afterwards (the forced failure was used up).
+        ctx.rig
+            .lock_with_and_wait(Duration::from_secs(2), LockTargets::ALL)?;
+        expect_mouse_probes_blocked(ctx.observer)?;
+        Ok(format!(
+            "ended after {} ms with error.hook_install; never locked; keys and mouse passed; \
+             next lock works{}",
+            ended.after.as_millis(),
+            unusable_probes_note()
+        ))
+    };
+    let result = run();
+    finish_mouse(ctx);
+    result.into()
+}
+
+/// S33 (opt-in diagnostic, `--mouse-diag`): Max uses the touchpad during a 15 s mouse-only lock
+/// while the engine only counts failed mouse liveness checks instead of ending the lock. Reports
+/// the raw mouse messages, the liveness misses and any of the person's mouse events (counted by
+/// kind only) that got past the lock. Informational: it fails only if input doesn't come back.
+fn mouse_diagnostic(ctx: &mut Ctx<'_>) -> Outcome {
+    let _cursor = CursorGuard::save();
+    println!();
+    println!("  Mouse diagnostic: the mouse and touchpad lock for 15 s; the keyboard stays free.");
+    println!("  When it says GO, on the touchpad: move, tap, click, two-finger scroll,");
+    println!("  three- and four-finger swipes left/right/up/down, and pinch.");
+    println!("  A mouse, if you have one: move, click, scroll. Ctrl+Alt+K ends it early.");
+    for n in (1..=5).rev() {
+        println!("  Locking in {n}...");
+        sleep(Duration::from_secs(1));
+    }
+    ctx.rig.engine().testkit_liveness_report_only(true);
+    let mut run = || -> Result<String, String> {
+        let raw_before = testkit::raw_mouse_seen();
+        let (_, misses_before) = testkit::liveness_misses();
+        let since = ctx
+            .rig
+            .lock_with_and_wait(Duration::from_secs(15), MOUSE_ONLY)?;
+        let observer = ctx.observer;
+        observer.count_untagged_mouse(true);
+        println!("  GO: use the touchpad now (15 s).");
+        // Stop counting the moment the session ends (timer or an early Ctrl+Alt+K), so normal
+        // mouse use after the unlock isn't reported as getting past the lock.
+        let mut counts = (0, 0);
+        let ended =
+            ctx.rig
+                .wait_ended_with_errors_then(since, Duration::from_secs(20), &mut || {
+                    observer.count_untagged_mouse(false);
+                    counts = (
+                        testkit::raw_mouse_seen().saturating_sub(raw_before),
+                        testkit::liveness_misses().1.saturating_sub(misses_before),
+                    );
+                })?;
+        println!("  STOP: the lock has ended.");
+        let (raw, misses) = counts;
+        let unused = if raw == 0 {
+            " (no mouse input arrived; was the touchpad used?)"
+        } else {
+            ""
+        };
+        let leaked: Vec<String> = MouseKind::ALL
+            .iter()
+            .filter_map(|&kind| {
+                let n = observer.untagged_mouse(kind);
+                (n > 0).then(|| format!("{} {n}", kind.name()))
+            })
+            .collect();
+        Ok(format!(
+            "ended {:?} after {:.1} s (errors {:?}); during the lock: {raw} raw mouse \
+             message(s){unused}, {misses} mouse liveness miss(es) (250 ms windows with raw mouse \
+             input but no hook call), your mouse events past the lock: {}; report-only mode also \
+             turned off the keyboard lost-hook check for this lock",
+            ended.reason,
+            ended.after.as_secs_f64(),
+            ended.errors,
+            if leaked.is_empty() {
+                "none".to_string()
+            } else {
+                leaked.join(", ")
+            }
+        ))
+    };
+    let result = run();
+    ctx.observer.count_untagged_mouse(false);
+    ctx.rig.engine().testkit_liveness_report_only(false);
+    finish_mouse(ctx);
+    let back =
+        expect_all_input_back(ctx.observer).and_then(|()| expect_no_raw_input_registration());
+    match (result, back) {
+        (Ok(detail), Ok(())) => Outcome::Pass(detail),
+        (Ok(detail), Err(e)) => Outcome::Fail(format!("{e}; {detail}")),
+        (Err(e), Ok(())) => Outcome::Fail(e),
+        (Err(e), Err(back)) => Outcome::Fail(format!("{e}; {back}")),
     }
 }

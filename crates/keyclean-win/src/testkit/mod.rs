@@ -3,10 +3,12 @@
 //! Only compiled with the non-default `testkit` feature; the app never calls it. It lets a test
 //! program drive a real lock without a human:
 //! - [`inject`] synthesizes key events with `SendInput`, each tagged with [`inject::TAG`];
-//! - [`observer::Observer`] is a low-level hook installed *before* the engine's, so it only sees
-//!   events that got past KeyClean. It counts tagged events and ignores everything else, so it
-//!   never sees or records what a person types;
-//! - [`held`] reports which keys Windows believes are down (the stuck-key check);
+//! - [`mouse`] synthesizes mouse events tagged with [`mouse::MOUSE_TAG`] and reads or sets the
+//!   cursor position;
+//! - [`observer::Observer`] is a pair of low-level hooks (keyboard and mouse) installed *before*
+//!   the engine's, so they only see events that got past KeyClean. They count tagged events; real
+//!   typing is never looked at, and a person's mouse events are only counted by kind;
+//! - [`held`] reports which keys and mouse buttons Windows believes are down (the stuck check);
 //! - [`system`] has process-window, workstation-lock and Raw Input registration helpers;
 //! - [`stall_next_callback`], [`raw_input_seen`], [`raw_mouse_seen`] and [`liveness_misses`]
 //!   drive and observe the hook-liveness check.
@@ -15,6 +17,7 @@
 
 pub mod held;
 pub mod inject;
+pub mod mouse;
 pub mod observer;
 pub mod system;
 

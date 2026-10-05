@@ -1,17 +1,17 @@
-//! Automated end-to-end checks for KeyClean's milestones M1-M3 (ADR 0008).
+//! Automated end-to-end checks for KeyClean's milestones M1-M5 (ADR 0008).
 //!
-//! **This engages real keyboard locks.** Run it by hand only, never from `cargo test` or by an
-//! agent. Each lock is clamped to the development caps (15 s, 20 s hard deadline), the real
-//! Ctrl+Alt+K works throughout, and an outside watchdog kills this process after 6 minutes.
+//! **This engages real keyboard and mouse locks.** Run it by hand only, never from `cargo test`
+//! or by an agent. Each lock is clamped to the development caps (15 s, 20 s hard deadline), the
+//! real Ctrl+Alt+K works throughout, and an outside watchdog kills this process after 7 minutes.
 //!
 //! ```text
 //! cargo build -p keyclean-win --example lock_smoke
 //! bun run build && cargo build -p keyclean
-//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall]
+//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag]
 //! ```
 //!
-//! Exit codes: 0 all passed, 1 a check failed, 2 the environment check failed (injected keys don't
-//! reach the observer: another keyboard hook, or no interactive desktop), 3 setup error.
+//! Exit codes: 0 all passed, 1 a check failed, 2 the environment check failed (injected keys or
+//! mouse moves don't reach the observer: another hook, or no interactive desktop), 3 setup error.
 //!
 //! ```text
 //! ```
@@ -33,8 +33,9 @@ use harness::EngineRig;
 use report::Report;
 use scenarios::{Ctx, Outcome};
 
-/// The outside watchdog's limit on the whole run.
-const RUN_LIMIT: Duration = Duration::from_secs(360);
+/// The outside watchdog's limit on the whole run. The default run takes about 5 minutes (the M5
+/// mouse checks add about 40 s).
+const RUN_LIMIT: Duration = Duration::from_secs(420);
 
 const EXIT_FAILED: i32 = 1;
 const EXIT_ENVIRONMENT: i32 = 2;
@@ -48,6 +49,7 @@ struct Options {
     session_lock: bool,
     stall: bool,
     raw_diag: bool,
+    mouse_diag: bool,
     only: Option<Vec<String>>,
 }
 
@@ -58,6 +60,7 @@ impl Options {
             session_lock: false,
             stall: false,
             raw_diag: false,
+            mouse_diag: false,
             only: None,
         };
         let mut args = std::env::args().skip(1);
@@ -75,6 +78,7 @@ impl Options {
                 "--session-lock" => options.session_lock = true,
                 "--stall" => options.stall = true,
                 "--raw-diag" => options.raw_diag = true,
+                "--mouse-diag" => options.mouse_diag = true,
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown option {other}\n\n{USAGE}")),
             }
@@ -83,13 +87,13 @@ impl Options {
     }
 }
 
-const USAGE: &str =
-    "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--only S2,S11]
+const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--only S2,S11]
   --only IDS      run only these checks (comma-separated IDs from the report)
   --skip-app      skip the scenarios that start the app (target/debug/keyclean.exe)
   --session-lock  also lock the workstation (you'll have to sign back in); runs last
   --stall         also stall the hook past Windows' timeout (S20; input lags up to 1 s once)
-  --raw-diag      also run S25: the lost-hook check after each system shortcut (opens Game Bar)";
+  --raw-diag      also run S25: the lost-hook check after each system shortcut (opens Game Bar)
+  --mouse-diag    also run S33: you use the touchpad during a 15 s mouse-only lock (prompts)";
 
 /// Kills this process after `RUN_LIMIT`, from outside, in case the harness hangs. Disarmed on
 /// drop.
@@ -141,11 +145,17 @@ fn main() {
 }
 
 fn run(options: &Options) -> i32 {
-    println!("KeyClean end-to-end checks (M1-M3)");
-    println!("This locks your keyboard several times over about 4 minutes (6 minutes at most).");
-    println!("  - Hands off the keyboard until it finishes. The mouse is never locked.");
-    println!("  - Click into an empty Notepad window now (anything that leaks lands there).");
+    println!("KeyClean end-to-end checks (M1-M5)");
+    println!(
+        "This locks your keyboard and mouse several times over about 5 minutes (7 minutes at most)."
+    );
+    println!("  - Hands off the keyboard, mouse and touchpad until it finishes.");
+    println!("  - Click into an empty Notepad window now (anything that leaks lands there) and");
+    println!("    leave the pointer over it; the harness puts the pointer back after each check.");
     println!("  - The real Ctrl+Alt+K always unlocks. Ctrl+C now to cancel.");
+    if options.mouse_diag {
+        println!("  - Near the end (S33) you'll be asked to use the touchpad; watch for GO.");
+    }
     for n in (1..=5).rev() {
         println!("Starting in {n}...");
         std::thread::sleep(Duration::from_secs(1));
@@ -183,6 +193,31 @@ fn run(options: &Options) -> i32 {
         }
     }
 
+    // The same for the mouse. Kinds that don't reach hooks at all here are left out of the mouse
+    // checks (and named in their results); without moves the mouse can't be tested.
+    match harness::check_mouse_environment(&observer) {
+        Ok(missing) if missing.contains(&harness::Probe::Move) => {
+            eprintln!(
+                "environment check failed: injected mouse moves don't reach the observer. \
+                 Another mouse hook may be swallowing them, or this session has no interactive \
+                 desktop."
+            );
+            return EXIT_ENVIRONMENT;
+        }
+        Ok(missing) if !missing.is_empty() => {
+            eprintln!(
+                "warning: these injected mouse events don't reach low-level hooks here and are \
+                 left out of the mouse checks: {}",
+                harness::names(&missing)
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("environment check failed: {e}");
+            return EXIT_ENVIRONMENT;
+        }
+    }
+
     let mut rig = match EngineRig::start() {
         Ok(rig) => rig,
         Err(e) => {
@@ -201,6 +236,11 @@ fn run(options: &Options) -> i32 {
         scenarios.insert(at, scenarios::hook_timeout_scenario());
     }
     scenarios.extend(scenarios::process_scenarios(options.skip_app));
+    // Last of the observer checks: touchpad gestures pass the keyboard hook of a mouse-only lock
+    // as shortcuts (Task View, desktop switch) and could spoil the checks after them.
+    if options.mouse_diag {
+        scenarios.push(scenarios::mouse_diag_scenario());
+    }
     if options.session_lock {
         scenarios.push(scenarios::session_lock_scenario());
     }
@@ -223,6 +263,8 @@ fn run(options: &Options) -> i32 {
                     " (S13 also needs --session-lock)"
                 } else if id == "S20" {
                     " (S20 also needs --stall)"
+                } else if id == "S33" {
+                    " (S33 also needs --mouse-diag)"
                 } else if options.skip_app
                     && ["S10", "S11", "S12", "S15", "S21", "S23"].contains(&id.as_str())
                 {
