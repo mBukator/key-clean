@@ -1,6 +1,7 @@
 # ADR 0007 - Injected input is blocked during a lock
 
-- Status: Accepted, 2026-10-01
+- Status: Accepted, 2026-10-01. Extended to the mouse by ADR 0013 (2026-10-05): injected mouse input
+  is blocked the same way; the mouse hook doesn't look at `LLMHF_INJECTED`.
 - Deciders: Max (decision 2026-10-01)
 - Related: `docs/research/phase-0-windows-input.md` (A5); M1 step 17
 
