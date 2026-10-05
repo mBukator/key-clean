@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ctrl+Alt+K, the timer, the hard deadline and closing KeyClean end every lock, also a mouse-only one. In a mouse-only lock the keyboard keeps working and the chord's last key never reaches the focused app.
 - The lost-hook check covers the mouse too: if Windows removes the mouse lock, the lock ends and the window says why. Only each Raw Input message's header (keyboard or mouse) is read.
 - Notices for a mouse or touchpad connected or disconnected during a lock, and status text that says what is locked.
-- Precision touchpads are marked Limited: some gestures may still work during a lock.
+- Precision touchpads are marked Limited: pointer movement, taps and clicks are locked, but two-finger scrolling, pinch, and three- and four-finger swipes still work, and the touchpad note says so.
 - Harness checks S26-S32 (mouse lock exits, mouse-only chord, dropped and failed mouse hook), S22 after a mouse lock, the opt-in `--mouse-diag` touchpad measurement, `lock_smoke --mouse`, the M5 manual test and research note.
 
 ### Changed

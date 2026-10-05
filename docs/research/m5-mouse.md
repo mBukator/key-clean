@@ -48,26 +48,28 @@ machine, [assumption] not yet verified.
 - Max's machine lists the ELAN1203 precision touchpad and the Logitech receiver's digitizer
   collection as touchpads, and their mouse interfaces as mice [tested 2026-10-05, `print_devices`:
   4 keyboards, 2 mice, 2 touchpads].
-- A precision touchpad's cursor movement, taps and clicks arrive as mouse input and reach the hook
-  [assumption; M5 step 7].
-- Two-finger scrolling, pinch, and three- and four-finger swipes may be handled by the shell or the
-  driver without passing the hook [assumption; M5 steps 2 and 7 record which].
-- Open risk: if a gesture produces raw mouse input without a hook call, the mouse lost-hook check
-  ends the lock early. `--mouse-diag` (harness S33) counts these misses with the check in report-only
-  mode.
+- A precision touchpad's cursor movement, taps and clicks arrive as mouse input and are blocked by
+  the hook [tested 2026-10-05, ELAN1203, M5 step 7].
+- Two-finger scrolling, pinch, and three- and four-finger swipes are **not** blocked: the page
+  scrolls and zooms, Task View opens and desktops switch [tested 2026-10-05, ELAN1203, mouse-only lock, M5
+  step 7]. They don't pass through `WH_MOUSE_LL` and produce no mouse Raw Input without a hook call,
+  since the live lost-hook check never fired. A user-mode hook can't stop them; only disabling the
+  touchpad could, which invariant 2 forbids.
+- The feared false alarm didn't happen: no gesture produced raw mouse input without a hook call
+  [tested 2026-10-05]. `--mouse-diag` (harness S33) stays available to measure other touchpads.
 
 ## Results
 
 To fill in from Part A and M5 steps 2 and 7:
 
-| Question                                        | Result                                                                                               |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Cursor frozen by blocking `WM_MOUSEMOVE`        | Yes [tested 2026-10-05, harness S26]                                                                 |
-| Horizontal wheel reaches the hook               | Yes, injected [tested 2026-10-05: the harness startup check found every probe kind, S26 blocked all] |
-| Injected mouse input produces mouse `WM_INPUT`  | Yes [tested 2026-10-05, S31: 15 messages]                                                            |
-| Touchpad move / tap / click blocked             |                                                                                                      |
-| Two-finger scroll blocked                       |                                                                                                      |
-| Three- and four-finger swipes blocked           |                                                                                                      |
-| Pinch blocked                                   |                                                                                                      |
-| Gestures cause liveness misses (`--mouse-diag`) | Touchpad: no, 0 misses in 1405 raw messages over 15 s [tested 2026-10-05, S33]                       |
-| Notepad menu bar after Ctrl+Alt+K (mouse-only)  |                                                                                                      |
+| Question                                        | Result                                                                                                                                                                                                         |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cursor frozen by blocking `WM_MOUSEMOVE`        | Yes [tested 2026-10-05, harness S26]                                                                                                                                                                           |
+| Horizontal wheel reaches the hook               | Yes, injected [tested 2026-10-05: the harness startup check found every probe kind, S26 blocked all]                                                                                                           |
+| Injected mouse input produces mouse `WM_INPUT`  | Yes [tested 2026-10-05, S31: 15 messages]                                                                                                                                                                      |
+| Touchpad move / tap / click blocked             | Yes [tested 2026-10-05, M5 step 7]                                                                                                                                                                             |
+| Two-finger scroll blocked                       | No, it scrolls the browser [tested 2026-10-05, M5 step 7]                                                                                                                                                      |
+| Three- and four-finger swipes blocked           | No, Task View and desktop switching work [tested 2026-10-05, M5 step 7]                                                                                                                                        |
+| Pinch blocked                                   | No, it zooms the browser [tested 2026-10-05, M5 step 7]                                                                                                                                                        |
+| Gestures cause liveness misses (`--mouse-diag`) | No. Touchpad and Logitech mouse (move, click, scroll): 0 misses in 1405 raw messages over 15 s [tested 2026-10-05, S33]. The gestures in M5 step 7 ended no lock early with the check live [tested 2026-10-05] |
+| Notepad menu bar after Ctrl+Alt+K (mouse-only)  | Not highlighted [tested 2026-10-05, M5 step 4]                                                                                                                                                                 |

@@ -80,10 +80,10 @@ The drain after a lock waits for held buttons as well as held keys.
 
 - Device notices during a lock say whether a keyboard or a mouse (including a touchpad's mouse
   interface) changed. Mice are only reported when the mouse is locked.
-- **Touchpads are Limited** (ADR 0004). A precision touchpad's pointer movement, taps and two-finger
-  scrolling arrive as mouse input [assumption, M5 testing records the real behaviour]. Gestures the
-  shell or the driver handles (three- and four-finger swipes, possibly pinch) may bypass the hook.
-  The window says so instead of claiming the touchpad is fully locked.
+- **Touchpads are Limited** (ADR 0004). A precision touchpad's pointer movement, taps and clicks
+  are blocked. Two-finger scrolling, pinch, and three- and four-finger swipes are not: they never
+  pass the hook [tested 2026-10-05, ELAN1203, M5 step 7]. The touchpad note in the window names those
+  gestures instead of claiming the touchpad is fully locked.
 
 ## Alternatives
 
