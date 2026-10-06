@@ -30,9 +30,20 @@ pub enum EngineError {
         /// Windows' message for it.
         message: String,
     },
+    /// Windows refused to install the mouse hook. The keyboard hook was removed again, so nothing
+    /// was locked.
+    MouseHookInstall {
+        /// The HRESULT.
+        code: i32,
+        /// Windows' message for it.
+        message: String,
+    },
     /// The keyboard hook stopped receiving input during a lock (Windows removed or skipped it), so
     /// the lock was ended.
     HookLost,
+    /// The mouse hook stopped receiving input during a lock (Windows removed or skipped it), so the
+    /// lock was ended.
+    MouseHookLost,
     /// The session timer couldn't be started, so the lock was released.
     Timer,
     /// The engine's message loop failed, so the lock was released.
@@ -80,6 +91,13 @@ impl EngineError {
         }
     }
 
+    pub(crate) fn mouse_hook_install(e: &windows::core::Error) -> Self {
+        EngineError::MouseHookInstall {
+            code: e.code().0,
+            message: e.message(),
+        }
+    }
+
     pub(crate) fn device_query(e: &windows::core::Error) -> Self {
         EngineError::DeviceQuery {
             code: e.code().0,
@@ -93,10 +111,14 @@ impl EngineError {
             EngineError::AlreadyRunning => "error.engine_already_running",
             EngineError::NotRunning | EngineError::EngineProcess(_) => "error.engine_stopped",
             EngineError::AlreadyActive => "error.already_locked",
+            EngineError::InvalidRequest(PolicyError::NoTargets) => "error.no_targets",
             EngineError::InvalidRequest(_) => "error.invalid_duration",
             EngineError::ThreadSpawn(_) | EngineError::WindowSetup { .. } => "error.engine_start",
-            EngineError::HookInstall { .. } => "error.hook_install",
+            EngineError::HookInstall { .. } | EngineError::MouseHookInstall { .. } => {
+                "error.hook_install"
+            }
             EngineError::HookLost => "error.hook_lost",
+            EngineError::MouseHookLost => "error.mouse_hook_lost",
             EngineError::Timer | EngineError::MessageLoop | EngineError::WindowDestroyed => {
                 "error.engine_failed"
             }
@@ -120,9 +142,15 @@ impl EngineError {
             EngineError::HookInstall { code, message } => {
                 format!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: HRESULT {code:#010X}: {message}")
             }
+            EngineError::MouseHookInstall { code, message } => {
+                format!("SetWindowsHookExW(WH_MOUSE_LL) failed: HRESULT {code:#010X}: {message}")
+            }
             EngineError::HookLost => {
                 "the keyboard hook stopped receiving input (Windows removed it or skipped it)"
                     .into()
+            }
+            EngineError::MouseHookLost => {
+                "the mouse hook stopped receiving input (Windows removed it or skipped it)".into()
             }
             EngineError::Timer => "SetTimer failed for the session timer".into(),
             EngineError::MessageLoop => "GetMessageW returned an error".into(),

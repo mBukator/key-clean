@@ -3,8 +3,8 @@ fn main() {
     // only the commands it needs (src-tauri/capabilities/).
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
-            "lock_keyboard",
-            "unlock_keyboard",
+            "lock_input",
+            "unlock_input",
             "get_lock_options",
             "get_status",
             "list_devices",

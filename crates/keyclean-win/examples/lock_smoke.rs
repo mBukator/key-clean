@@ -1,10 +1,12 @@
 //! Manual smoke test for the M1 engine. **Engages a real keyboard lock — run it by hand only.**
 //!
 //! ```text
-//! cargo run -p keyclean-win --example lock_smoke
+//! cargo run -p keyclean-win --example lock_smoke            # keyboard only
+//! cargo run -p keyclean-win --example lock_smoke -- --mouse  # keyboard, mouse and touchpad
 //! ```
 //!
-//! Prints the detected keyboards, counts down 3 s, locks the keyboard for at most 15 s (the
+//! Prints the detected devices, counts down 3 s, locks the keyboard (and with `--mouse` the mouse
+//! and touchpad too) for at most 15 s (the
 //! development cap, applied here even in `--release`), then prints how the lock ended. Ways out:
 //! Ctrl+Alt+K, the 15 s timer, the 20 s hard deadline, or killing the process
 //! (`Stop-Process -Name lock_smoke -Force`). See docs/testing/manual/M1.md.
@@ -13,9 +15,14 @@ use std::time::Duration;
 
 use keyclean_win::keyclean_core::countdown;
 use keyclean_win::keyclean_core::policy::{DEV_MAX_HARD_DEADLINE, DEV_MAX_SESSION};
-use keyclean_win::{Engine, EngineEvent, LockRequest};
+use keyclean_win::{Engine, EngineEvent, LockRequest, LockTargets};
 
 fn main() {
+    let targets = if std::env::args().any(|arg| arg == "--mouse") {
+        LockTargets::ALL
+    } else {
+        LockTargets::KEYBOARD
+    };
     let (engine, events) = match Engine::start() {
         Ok(started) => started,
         Err(e) => {
@@ -27,7 +34,7 @@ fn main() {
     match keyclean_win::input_devices() {
         Ok(devices) if devices.is_empty() => println!("No input devices detected."),
         Ok(devices) => {
-            println!("Detected input devices (every keyboard is locked; nothing else is):");
+            println!("Detected input devices:");
             for d in devices {
                 println!(
                     "  - {:?}, {:?}: {}",
@@ -51,12 +58,18 @@ fn main() {
     let request = LockRequest {
         duration: DEV_MAX_SESSION,
         max_lock: DEV_MAX_HARD_DEADLINE,
+        targets,
     };
     if let Err(e) = engine.lock(request) {
         eprintln!("lock request failed: {}", e.details());
         std::process::exit(1);
     }
-    println!("Keyboard locked. Press Ctrl+Alt+K to unlock, or wait up to 15 s.");
+    let what = if targets.mouse {
+        "Keyboard, mouse and touchpad"
+    } else {
+        "Keyboard"
+    };
+    println!("{what} locked. Press Ctrl+Alt+K to unlock, or wait up to 15 s.");
 
     // Generous upper bound: hard deadline + drain + slack.
     let give_up = Duration::from_secs(40);

@@ -39,8 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - External devices are named by what their bus reports (for example "HyperX Alloy Origins") instead of "HID Keyboard Device", and the interfaces of one physical device show as one row per kind.
 - Harness check S22 now runs with the device watch active; the M4 manual test and research note.
 
+- Mouse and touchpad lock (M5): choose Keyboard, Mouse and touchpad, or both before locking (the keyboard alone by default). A locked mouse can't move the cursor, click or scroll; held buttons are released cleanly afterwards (ADR 0013).
+- Ctrl+Alt+K, the timer, the hard deadline and closing KeyClean end every lock, also a mouse-only one. In a mouse-only lock the keyboard keeps working and the chord's last key never reaches the focused app.
+- The lost-hook check covers the mouse too: if Windows removes the mouse lock, the lock ends and the window says why. Only each Raw Input message's header (keyboard or mouse) is read.
+- Notices for a mouse or touchpad connected or disconnected during a lock, and status text that says what is locked.
+- Precision touchpads are marked Limited: pointer movement, taps and clicks are locked, but two-finger scrolling, pinch, and three- and four-finger swipes still work, and the touchpad note says so.
+- Harness checks S26-S32 (mouse lock exits, mouse-only chord, dropped and failed mouse hook), S22 after a mouse lock, the opt-in `--mouse-diag` touchpad measurement, `lock_smoke --mouse`, the M5 manual test and research note.
+
 ### Changed
 
+- The window's lock commands are now `lock_input` and `unlock_input`, with keyboard and mouse choices.
 - The `list_keyboards` command is now `list_devices` and returns every input device with its kind and capability.
 - The watchdog ends a hung engine with `TerminateProcess` instead of `abort()`, which went through Windows Error Reporting and kept the hook installed about 5 s longer.
 - Harness check S6 no longer sends Win+G: it opens the Xbox Game Bar despite the lock, which blinds the lost-hook check while the overlay is open (documented limitation).

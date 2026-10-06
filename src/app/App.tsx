@@ -11,16 +11,24 @@ import {
     type EngineStatus,
     type ErrorInfo,
     type LockOptions,
+    type LockTargets,
     type SessionState,
 } from "../shared/types/engine";
 import { DeviceList } from "../ui/devices/DeviceList";
 
-const STATE_KEYS: Record<SessionState, StringKey> = {
+const STATE_KEYS: Record<Exclude<SessionState, "locked">, StringKey> = {
     idle: "status.idle",
     starting: "status.starting",
-    locked: "status.locked",
     unlocking: "status.unlocking",
 };
+
+/** The status line for a lock, from what the engine says it blocks. */
+function lockedKey(targets: LockTargets | null): StringKey {
+    if (targets?.mouse) {
+        return targets.keyboard ? "status.locked.all" : "status.locked.mouse";
+    }
+    return "status.locked.keyboard";
+}
 
 const END_REASON_KEYS: Record<EndReason, StringKey> = {
     timeout: "endReason.timeout",
@@ -94,6 +102,8 @@ export function App() {
     const [selected, setSelected] = useState<number | null>(null);
     const [devices, setDevices] = useState<DevicesState | null>(null);
     const [requestError, setRequestError] = useState<ErrorInfo | null>(null);
+    const [lockKeyboard, setLockKeyboard] = useState(true);
+    const [lockMouse, setLockMouse] = useState(false);
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;
@@ -170,21 +180,27 @@ export function App() {
             return;
         }
         setRequestError(null);
-        invoke("lock_keyboard", { seconds }).catch((err: unknown) => {
-            setRequestError(toErrorInfo(err));
-        });
+        invoke("lock_input", { seconds, keyboard: lockKeyboard, mouse: lockMouse }).catch(
+            (err: unknown) => {
+                setRequestError(toErrorInfo(err));
+            }
+        );
     };
 
     const unlock = () => {
         setRequestError(null);
-        invoke("unlock_keyboard").catch((err: unknown) => {
+        invoke("unlock_input").catch((err: unknown) => {
             setRequestError(toErrorInfo(err));
         });
     };
 
     const state = status?.state ?? "idle";
     const idle = state === "idle";
-    const canLock = status?.engineAvailable === true && idle && seconds !== null;
+    const hasTarget = lockKeyboard || lockMouse;
+    const canLock =
+        status?.engineAvailable === true && idle && seconds !== null && hasTarget;
+    const stateKey =
+        state === "locked" ? lockedKey(status?.targets ?? null) : STATE_KEYS[state];
     const error = requestError ?? status?.error ?? null;
     const countdown = status?.countdownSecs ?? null;
     const notice = status?.notice && isStringKey(status.notice) ? t(status.notice) : null;
@@ -227,6 +243,36 @@ export function App() {
                         </div>
                     </fieldset>
                 )}
+                <fieldset disabled={!idle} className="flex flex-col gap-2">
+                    <legend className="mb-1 font-medium">{t("lock.targetsLabel")}</legend>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                        <label className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={lockKeyboard}
+                                onChange={(event) => {
+                                    setLockKeyboard(event.target.checked);
+                                }}
+                            />
+                            {t("lock.target.keyboard")}
+                        </label>
+                        <label className="flex items-center gap-2">
+                            <input
+                                type="checkbox"
+                                checked={lockMouse}
+                                onChange={(event) => {
+                                    setLockMouse(event.target.checked);
+                                }}
+                            />
+                            {t("lock.target.mouse")}
+                        </label>
+                    </div>
+                    {lockMouse && (
+                        <p className="text-sm break-words text-neutral-600">
+                            {t("lock.target.mouseHint")}
+                        </p>
+                    )}
+                </fieldset>
                 <div className="flex flex-wrap items-center gap-3">
                     <button
                         type="button"
@@ -261,7 +307,7 @@ export function App() {
                     </p>
                 )}
                 <p aria-live="polite" className="font-medium">
-                    {t(STATE_KEYS[state])}
+                    {t(stateKey)}
                 </p>
                 {status?.lastEndReason && idle && (
                     <p aria-live="polite" className="text-sm text-neutral-600">
@@ -287,9 +333,7 @@ export function App() {
                 <h2 className="text-lg font-semibold">{t("devices.title")}</h2>
                 {devices?.error && <ErrorMessage error={devices.error} />}
                 {devices && <DeviceList devices={devices.devices} />}
-                <p className="text-xs text-neutral-500">
-                    {t("devices.allLocked")} {t("devices.notLockedYet")}
-                </p>
+                <p className="text-xs text-neutral-500">{t("devices.lockScope")}</p>
             </section>
         </main>
     );

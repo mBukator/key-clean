@@ -25,6 +25,7 @@ use windows::Win32::UI::Input::{
 };
 use windows::core::PCWSTR;
 
+use crate::engine::DeviceClass;
 use crate::error::EngineError;
 
 /// Lists the connected keyboards, mice, touchpads and other pointing devices KeyClean knows about
@@ -129,14 +130,52 @@ pub(crate) fn raw_input_devices() -> Result<Vec<RAWINPUTDEVICELIST>, EngineError
     })
 }
 
-/// Raw Input handles of the connected keyboards, without names (no configuration-manager calls,
-/// so it is cheap enough for the engine thread).
-pub(crate) fn keyboard_handles() -> Result<Vec<isize>, EngineError> {
+/// Raw Input handles of the connected keyboards, and of the mice too when `mice` is true, without
+/// names (no configuration-manager calls, so it is cheap enough for the engine thread).
+pub(crate) fn lock_handles(mice: bool) -> Result<Vec<(isize, DeviceClass)>, EngineError> {
     Ok(raw_input_devices()?
         .into_iter()
-        .filter(|device| device.dwType == RIM_TYPEKEYBOARD)
-        .map(|device| device.hDevice.0 as isize)
+        .filter_map(|device| {
+            let class = device_class(device.dwType)?;
+            (class == DeviceClass::Keyboard || mice).then_some((device.hDevice.0 as isize, class))
+        })
         .collect())
+}
+
+/// The class of the device with Raw Input handle `handle`, if it is a keyboard or a mouse. For an
+/// arrival during a lock; a removed device can't be queried any more.
+pub(crate) fn class_of(handle: isize) -> Option<DeviceClass> {
+    let mut info = RID_DEVICE_INFO {
+        cbSize: size_of::<RID_DEVICE_INFO>() as u32,
+        ..Default::default()
+    };
+    let mut size = info.cbSize;
+    // SAFETY: `info` is a RID_DEVICE_INFO whose cbSize is set, and `size` is its size in bytes, as
+    // RIDI_DEVICEINFO requires. A stale handle makes the call fail, not misbehave.
+    let copied = unsafe {
+        GetRawInputDeviceInfoW(
+            Some(HANDLE(handle as *mut _)),
+            RIDI_DEVICEINFO,
+            Some((&raw mut info).cast()),
+            &mut size,
+        )
+    };
+    if copied == u32::MAX || copied == 0 {
+        return None;
+    }
+    device_class(info.dwType)
+}
+
+fn device_class(
+    device_type: windows::Win32::UI::Input::RID_DEVICE_INFO_TYPE,
+) -> Option<DeviceClass> {
+    if device_type == RIM_TYPEKEYBOARD {
+        Some(DeviceClass::Keyboard)
+    } else if device_type == RIM_TYPEMOUSE {
+        Some(DeviceClass::Mouse)
+    } else {
+        None
+    }
 }
 
 fn last_error() -> EngineError {

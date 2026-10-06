@@ -1,6 +1,8 @@
 # ADR 0010 - Detect a lost keyboard hook with a session-scoped Raw Input sink
 
-- Status: Accepted, 2026-10-04
+- Status: Accepted, 2026-10-04. Amended by ADR 0013 (2026-10-05): the check also covers the mouse
+  hook, and the engine reads each `WM_INPUT`'s header (`RID_HEADER`, device type only) to tell
+  keyboard from mouse. It still never reads input contents.
 - Deciders: Max (elevated-window policy, 2026-10-04)
 - Related: `crates/keyclean-core/src/liveness.rs`, `crates/keyclean-win/src/{engine,hook,raw_input,foreground}.rs`,
   `docs/research/m3-safety.md`, fail-safe matrix, harness checks S17, S20, S22, M3 steps 6 and 7.

@@ -20,7 +20,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
 | M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
 | M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | not started                                 |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
 | M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
 | M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
 | M8 System tray                                 | §55 Phase 4 | not started                                 |
@@ -247,7 +247,38 @@ Acceptance:
 
 ### M5 - Mouse and touchpad lock (§22, §23)
 
-Status: not started. Manual test: `docs/testing/manual/M5.md`.
+Status: **done** (verified by Max, 2026-10-05). Verification: `cargo run -p keyclean-e2e` (S26-S32,
+S22), `--mouse-diag` (S33), and Part B of `docs/testing/manual/M5.md`. Optional step 8 passed (Tab
+and Enter reach Unlock now in a mouse-only lock); steps 9-12 weren't run.
+
+Harness, 2026-10-05: **29/29 passed** in 126 s on Max's machine, including S26-S32. S33 with the
+touchpad and the Logitech mouse: 1405 raw mouse messages, 0 mouse liveness misses, nothing past the
+lock. Part B: all steps passed.
+
+**Touchpad finding (M5 step 7):** on the ELAN1203 precision touchpad, pointer movement, taps and
+clicks are blocked, but two-finger scrolling, pinch, and three- and four-finger swipes still work
+during a lock. They never pass the low-level hook, and a user-mode hook can't stop them (disabling the
+touchpad is forbidden by invariant 2). They also never tripped the lost-hook check. The touchpad
+note in the window now names those gestures.
+
+Done in code (ADR 0013, research note `docs/research/m5-mouse.md`):
+
+- **Targets.** A lock blocks the keyboard, the mouse and touchpad, or both. The window has two
+  checkboxes, Keyboard on and Mouse and touchpad off by default (Max's decision, 2026-10-05: locking
+  the mouse removes the clickable Unlock now button). `lock_keyboard` became `lock_input`.
+- **Mouse hook.** `WH_MOUSE_LL` on the engine thread, only when the mouse is locked. While locked it
+  blocks movement, every button, both wheels and unknown mouse messages. Held buttons drain like keys
+  (`keyclean-core::mouse`). Injected mouse input is blocked too.
+- **Exits.** The keyboard hook is installed for every lock, so Ctrl+Alt+K works in a mouse-only lock.
+  There it lets keys through and swallows only the key that completes the chord (Max's decision).
+  Both hooks enforce the hard deadline. A failed mouse hook install removes the keyboard hook again.
+- **Lost-hook check.** Mouse Raw Input during a mouse lock; each `WM_INPUT` is told apart by its
+  header only (ADR 0010 amended). A miss ends the lock with "mouse lock stopped early" (Max's
+  decision), unless the window under the cursor is elevated.
+- **Notices and status.** Device notices say keyboard or mouse; the status line and notices follow
+  what the engine says is locked.
+- **Harness.** Tagged mouse probes and a mouse observer that swallows leaking probe clicks; S26-S32,
+  S22 after a mouse lock, opt-in S33 `--mouse-diag`; `lock_smoke --mouse`.
 
 Scope: `WH_MOUSE_LL` on the same engine thread, full mouse lock (§22) with the same four exits, touchpad
 handled through the capability model (Supported / Limited / Unsupported, ADR 0004). Emergency chord
@@ -255,9 +286,9 @@ stays keyboard-based.
 
 Acceptance:
 
-- [ ] Selected input is blocked (§60 "Input")
-- [ ] Mouse lock releases on every exit (timer, chord, hard deadline, process death)
-- [ ] Touchpad shows the right capability level and behaves as documented
+- [x] Selected input is blocked (§60 "Input")
+- [x] Mouse lock releases on every exit (timer, chord, hard deadline, process death)
+- [x] Touchpad shows the right capability level and behaves as documented
 
 ## Phase 3 - MVP UI (§54)
 

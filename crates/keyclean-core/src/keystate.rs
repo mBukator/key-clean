@@ -171,14 +171,31 @@ impl KeyTracker {
     }
 }
 
+/// The phase a key event is decided under, given whether the keyboard is locked this session.
+///
+/// A keyboard lock uses the hook's phase as it is. When only the mouse is locked, the keyboard hook
+/// still runs for the emergency chord, and while `Locked` it follows the `Draining` rules: new
+/// presses pass, and only repeats and releases of blocked presses stay blocked. The one press it
+/// blocks is the key-down that completes the chord (`completes_chord`), decided under `Locked`, so
+/// that key never reaches the focused app and its repeats and release are drained like any other
+/// blocked press. Keys pressed before it already reached Windows; their releases pass.
+pub const fn keyboard_phase(phase: Phase, keyboard_locked: bool, completes_chord: bool) -> Phase {
+    match phase {
+        Phase::Locked if !keyboard_locked && !completes_chord => Phase::Draining,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::chord::KeyDirection::{Down, Up};
+    use crate::chord::{ChordKey, ChordState};
 
     // Virtual-key codes, for readability only.
     const CTRL: u8 = 0xA2;
     const ALT: u8 = 0xA4;
+    const RALT: u8 = 0xA5;
     const K: u8 = 0x4B;
     const A: u8 = 0x41;
     const SHIFT: u8 = 0xA0;
@@ -413,6 +430,155 @@ mod tests {
         assert_eq!(tracker.decide(Phase::Passthrough, A, Down), Verdict::Pass);
         assert_eq!(tracker.decide(Phase::Passthrough, A, Up), Verdict::Pass);
         assert_eq!(tracker.decide(Phase::Passthrough, K, Up), Verdict::Pass);
+    }
+
+    /// A mouse-only lock (keyboard not locked) as the keyboard hook runs it: the real chord
+    /// detector decides which key completes the chord, and the phase moves to Draining when it
+    /// fires.
+    struct MouseOnly {
+        rig: Rig,
+        chord: ChordState,
+        phase: Phase,
+    }
+
+    impl MouseOnly {
+        /// Locked, with `held` already down before the hook went in.
+        fn locked(held: &[u8]) -> Self {
+            let mut rig = Rig::new();
+            let mut chord = ChordState::new();
+            for &code in held {
+                rig.held_before_hook(code);
+                chord = chord.with_held(chord_key(code));
+            }
+            rig.snapshot();
+            MouseOnly {
+                rig,
+                chord,
+                phase: Phase::Locked,
+            }
+        }
+
+        fn send(&mut self, code: u8, dir: KeyDirection) -> Verdict {
+            let fired = self.chord.on_key(chord_key(code), dir);
+            let completes = fired && self.phase == Phase::Locked;
+            let verdict = self
+                .rig
+                .send(keyboard_phase(self.phase, false, completes), code, dir);
+            if completes {
+                self.phase = Phase::Draining;
+            }
+            verdict
+        }
+    }
+
+    fn chord_key(code: u8) -> ChordKey {
+        match code {
+            CTRL => ChordKey::LeftCtrl,
+            ALT => ChordKey::LeftAlt,
+            RALT => ChordKey::RightAlt,
+            K => ChordKey::K,
+            _ => ChordKey::Other,
+        }
+    }
+
+    #[test]
+    fn keyboard_lock_uses_the_hook_phase() {
+        for phase in [
+            Phase::Arming,
+            Phase::Locked,
+            Phase::Draining,
+            Phase::Passthrough,
+        ] {
+            assert_eq!(keyboard_phase(phase, true, false), phase);
+            assert_eq!(keyboard_phase(phase, true, true), phase);
+        }
+        // Mouse-only: only `Locked` changes, and only for keys that don't complete the chord.
+        assert_eq!(keyboard_phase(Phase::Locked, false, false), Phase::Draining);
+        assert_eq!(keyboard_phase(Phase::Locked, false, true), Phase::Locked);
+        for phase in [Phase::Arming, Phase::Draining, Phase::Passthrough] {
+            assert_eq!(keyboard_phase(phase, false, false), phase);
+        }
+    }
+
+    #[test]
+    fn mouse_only_lock_lets_typing_through() {
+        let mut lock = MouseOnly::locked(&[SHIFT]);
+        for &(code, dir) in &[(A, Down), (A, Down), (A, Up), (SHIFT, Down), (SHIFT, Up)] {
+            assert_eq!(lock.send(code, dir), Verdict::Pass);
+        }
+        // Shift before the hook, A twice, the Shift repeat.
+        assert_eq!(lock.rig.os.delivered_downs, 4);
+        assert_eq!(lock.phase, Phase::Locked);
+        assert!(lock.rig.tracker.drained());
+        assert!(lock.rig.os.down.is_empty());
+    }
+
+    #[test]
+    fn mouse_only_chord_swallows_only_the_completing_key() {
+        // Ctrl, then Alt, then K: Ctrl and Alt reach Windows, K doesn't.
+        let mut lock = MouseOnly::locked(&[]);
+        assert_eq!(lock.send(CTRL, Down), Verdict::Pass);
+        assert_eq!(lock.send(ALT, Down), Verdict::Pass);
+        assert_eq!(lock.send(K, Down), Verdict::Block);
+        assert_eq!(lock.phase, Phase::Draining, "the chord fired on K");
+        // The user keeps holding all three; Windows auto-repeats them.
+        for _ in 0..5 {
+            assert_eq!(lock.send(K, Down), Verdict::Block);
+            assert_eq!(lock.send(CTRL, Down), Verdict::Pass);
+            assert_eq!(lock.send(ALT, Down), Verdict::Pass);
+        }
+        assert!(!lock.rig.tracker.drained());
+        assert_eq!(lock.send(CTRL, Up), Verdict::Pass);
+        assert_eq!(lock.send(K, Up), Verdict::Block);
+        assert_eq!(lock.send(ALT, Up), Verdict::Pass);
+        assert!(lock.rig.tracker.drained());
+        assert!(!lock.rig.os.down.contains(K), "K never reached the app");
+        assert!(lock.rig.os.down.is_empty(), "no stuck keys");
+    }
+
+    #[test]
+    fn mouse_only_chord_in_any_order_swallows_the_last_key() {
+        // K first, then Ctrl, then Alt: K already reached Windows, Alt completes the chord.
+        let mut lock = MouseOnly::locked(&[]);
+        assert_eq!(lock.send(K, Down), Verdict::Pass);
+        assert_eq!(lock.send(CTRL, Down), Verdict::Pass);
+        assert_eq!(lock.send(ALT, Down), Verdict::Block);
+        assert_eq!(lock.phase, Phase::Draining, "the chord fired on Alt");
+        assert_eq!(lock.send(K, Up), Verdict::Pass);
+        assert_eq!(lock.send(ALT, Up), Verdict::Block);
+        assert_eq!(lock.send(CTRL, Up), Verdict::Pass);
+        assert!(lock.rig.tracker.drained());
+        assert!(lock.rig.os.down.is_empty());
+    }
+
+    #[test]
+    fn mouse_only_altgr_k_swallows_k() {
+        // AltGr arrives as LCtrl + RAlt; both pass, K completes the chord.
+        let mut lock = MouseOnly::locked(&[]);
+        assert_eq!(lock.send(CTRL, Down), Verdict::Pass);
+        assert_eq!(lock.send(RALT, Down), Verdict::Pass);
+        assert_eq!(lock.send(K, Down), Verdict::Block);
+        assert_eq!(lock.phase, Phase::Draining, "AltGr+K fired the chord");
+        assert_eq!(lock.send(K, Up), Verdict::Block);
+        assert_eq!(lock.send(RALT, Up), Verdict::Pass);
+        assert_eq!(lock.send(CTRL, Up), Verdict::Pass);
+        assert!(lock.rig.tracker.drained());
+        assert!(lock.rig.os.down.is_empty());
+    }
+
+    #[test]
+    fn mouse_only_chord_with_k_held_at_lock_start_swallows_the_modifier() {
+        // K was down before the lock; Ctrl then Alt completes the chord on Alt.
+        let mut lock = MouseOnly::locked(&[K]);
+        assert_eq!(lock.send(K, Down), Verdict::Pass); // its repeat
+        assert_eq!(lock.send(CTRL, Down), Verdict::Pass);
+        assert_eq!(lock.send(ALT, Down), Verdict::Block);
+        assert_eq!(lock.phase, Phase::Draining);
+        assert_eq!(lock.send(K, Up), Verdict::Pass);
+        assert_eq!(lock.send(CTRL, Up), Verdict::Pass);
+        assert_eq!(lock.send(ALT, Up), Verdict::Block);
+        assert!(lock.rig.tracker.drained());
+        assert!(lock.rig.os.down.is_empty());
     }
 
     #[test]

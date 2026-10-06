@@ -17,13 +17,18 @@
 //! - system transitions (suspend, end of session, workstation lock, disconnect);
 //! - process exit, after which Windows removes the hook.
 //!
-//! Hook-liveness check: during a lock the engine window is also registered for keyboard Raw Input
-//! (`raw_input`). A `WM_INPUT` arms a short timer; when it fires, the hook must have been called
-//! around the same time (`keyclean_core::liveness`), or the lock ends with `HookLost` (Windows
-//! removed or skipped the hook). Keys typed into an elevated window never reach the hook (UIPI), so
-//! that case keeps the lock and warns once instead. `WM_INPUT` is counted, never read.
+//! A lock targets the keyboard, the mouse or both ([`LockTargets`]). The keyboard hook is always
+//! installed, because it carries the emergency chord; the mouse hook only when the mouse is locked.
 //!
-//! The same registration reports keyboards connected or disconnected during a lock.
+//! Hook-liveness check: during a lock the engine window is also registered for keyboard Raw Input
+//! (`raw_input`), and for mouse Raw Input when the mouse is locked. A `WM_INPUT` arms a short timer
+//! for its kind; when it fires, that kind's hook must have been called around the same time
+//! (`keyclean_core::liveness`), or the lock ends with `HookLost` / `MouseHookLost` (Windows removed
+//! or skipped the hook). Input to an elevated window may never reach a hook (UIPI), so that case
+//! keeps the lock and warns once instead. Only the `WM_INPUT` header is read (its device type);
+//! never its contents.
+//!
+//! The same registration reports keyboards and mice connected or disconnected during a lock.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +40,7 @@ use std::time::{Duration, Instant};
 use keyclean_core::countdown;
 use keyclean_core::keystate::Phase;
 use keyclean_core::liveness::{self, LIVENESS_CHECK_DELAY};
+pub use keyclean_core::policy::LockTargets;
 use keyclean_core::policy::{
     DEFAULT_MAX_LOCK, DRAIN_IDLE_TIMEOUT, DrainCheck, LockPlan, SafetyProfile, drain_check,
     plan_lock,
@@ -64,10 +70,11 @@ use windows::core::w;
 use crate::devices;
 use crate::error::EngineError;
 use crate::msg::{
-    TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_HOOK_CHECK, TIMER_SESSION, WM_COMMANDS_READY,
-    WM_HOOK_CHORD, WM_HOOK_DEADLINE, WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
+    TIMER_COUNTDOWN, TIMER_DRAIN, TIMER_HOOK_CHECK, TIMER_MOUSE_HOOK_CHECK, TIMER_SESSION,
+    WM_COMMANDS_READY, WM_HOOK_CHORD, WM_HOOK_DEADLINE, WM_HOOK_DRAINED, WM_WATCHDOG_EXPIRED,
 };
 use crate::qpc::{self, QpcClock};
+use crate::raw_input::RawSource;
 use crate::watchdog::Watchdog;
 use crate::{foreground, hook, raw_input};
 
@@ -80,10 +87,32 @@ static ENGINE_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "testkit")]
 static TESTKIT_FAIL_NEXT_INSTALL: AtomicBool = AtomicBool::new(false);
 
+/// Testkit only: makes the next mouse hook installation fail without calling `SetWindowsHookExW`.
+#[cfg(feature = "testkit")]
+static TESTKIT_FAIL_NEXT_MOUSE_INSTALL: AtomicBool = AtomicBool::new(false);
+
+/// Testkit only: a failed liveness check is counted in [`LIVENESS_MISSES`] instead of ending the
+/// lock, so the harness can measure how touchpad gestures relate to the hooks (`--mouse-diag`).
+#[cfg(feature = "testkit")]
+pub(crate) static LIVENESS_REPORT_ONLY: AtomicBool = AtomicBool::new(false);
+
 /// Testkit only: `WM_INPUT` messages received by the engine window (counted, never read).
 #[cfg(feature = "testkit")]
 pub(crate) static RAW_INPUT_SEEN: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Testkit only: `WM_INPUT` messages whose header said they came from a mouse.
+#[cfg(feature = "testkit")]
+pub(crate) static RAW_MOUSE_SEEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Testkit only: failed liveness checks while [`LIVENESS_REPORT_ONLY`] is set, as
+/// `[keyboard, mouse]`.
+#[cfg(feature = "testkit")]
+pub(crate) static LIVENESS_MISSES: [std::sync::atomic::AtomicU64; 2] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
 
 /// The safety profile this build enforces. Debug builds always use the development caps,
 /// whatever the caller wants (invariant 13).
@@ -95,22 +124,30 @@ pub fn safety_profile() -> SafetyProfile {
     }
 }
 
-/// A request to lock the keyboard.
+/// A request to lock the keyboard, the mouse, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LockRequest {
     /// How long the lock should last.
     pub duration: Duration,
     /// The user's "maximum lock duration" setting (bounds the hard deadline).
     pub max_lock: Duration,
+    /// What the lock blocks. At least one must be set.
+    pub targets: LockTargets,
 }
 
 impl LockRequest {
-    /// A lock of `duration` with the default maximum lock duration.
+    /// A keyboard lock of `duration` with the default maximum lock duration.
     pub const fn new(duration: Duration) -> Self {
         LockRequest {
             duration,
             max_lock: DEFAULT_MAX_LOCK,
+            targets: LockTargets::KEYBOARD,
         }
+    }
+
+    /// The same request, blocking `targets`.
+    pub const fn with_targets(self, targets: LockTargets) -> Self {
+        LockRequest { targets, ..self }
     }
 }
 
@@ -125,6 +162,9 @@ pub struct EngineStatus {
     pub session_remaining: Option<Duration>,
     /// Time left until the hard deadline, while starting or locked.
     pub hard_deadline_remaining: Option<Duration>,
+    /// What the session blocks, while a session exists (not idle). The UI shows this rather than
+    /// what it asked for.
+    pub targets: Option<LockTargets>,
 }
 
 /// Something noteworthy that isn't an error, for session logs.
@@ -139,25 +179,38 @@ pub enum EngineNotice {
     PowerNotificationUnavailable,
     /// Workstation lock/switch notifications couldn't be registered.
     SessionNotificationUnavailable,
-    /// Keyboard Raw Input couldn't be registered for this lock, so a hook Windows removes can't be
+    /// Raw Input couldn't be registered for this lock, so a hook Windows removes can't be
     /// detected and device changes aren't reported. The lock continues.
     LivenessCheckUnavailable,
     /// The session's Raw Input registration couldn't be removed when it ended, so the engine may
-    /// still receive keyboard messages while idle (it never reads them; the registration ends with
+    /// still receive input messages while idle (it never reads them; the registration ends with
     /// the process).
     RawInputNotRemoved,
     /// Keys reached an elevated (administrator) window, which a user-mode hook can't block. The
     /// lock continues for every other window. Sent at most once per lock.
     ElevatedWindowBypass,
+    /// Mouse input reached an elevated (administrator) window. As above, for the mouse.
+    ElevatedWindowMouseBypass,
 }
 
-/// A keyboard connected or disconnected during a lock. Carries no device name or id.
+/// The kind of device a [`DeviceChange`] is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceClass {
+    /// A keyboard.
+    Keyboard,
+    /// A mouse, or a touchpad's mouse interface.
+    Mouse,
+}
+
+/// A keyboard or mouse connected or disconnected during a lock. Carries no device name or id.
+/// Mice are only reported when the mouse is locked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceChange {
-    /// A keyboard that wasn't connected when the lock began was connected. It is locked too.
-    Arrived,
-    /// A keyboard that was connected when the lock began was disconnected.
-    Removed,
+    /// A device that wasn't connected when the lock began was connected. Locked too if its class
+    /// is locked.
+    Arrived(DeviceClass),
+    /// A device that was connected when the lock began was disconnected.
+    Removed(DeviceClass),
 }
 
 /// Everything the engine reports. Contains no key data.
@@ -190,6 +243,9 @@ enum Command {
     /// Testkit: unhook behind the engine's back (a deterministic silent hook removal).
     #[cfg(feature = "testkit")]
     DropHook,
+    /// Testkit: the same for the mouse hook.
+    #[cfg(feature = "testkit")]
+    DropMouseHook,
     /// Testkit: block the engine thread.
     #[cfg(feature = "testkit")]
     Hang(Duration),
@@ -277,10 +333,31 @@ impl Engine {
         self.send(Command::DropHook)
     }
 
+    /// Testkit only: the mouse hook disappears without the engine knowing, as with
+    /// [`testkit_drop_hook`](Self::testkit_drop_hook).
+    #[cfg(feature = "testkit")]
+    pub fn testkit_drop_mouse_hook(&self) -> Result<(), EngineError> {
+        self.send(Command::DropMouseHook)
+    }
+
     /// Testkit only: the next lock fails to install its hook (`error.hook_install`).
     #[cfg(feature = "testkit")]
     pub fn testkit_fail_next_install(&self) {
         TESTKIT_FAIL_NEXT_INSTALL.store(true, Ordering::Release);
+    }
+
+    /// Testkit only: the next lock that includes the mouse fails to install the mouse hook, after
+    /// the keyboard hook went in (`error.hook_install`; the keyboard hook must come out again).
+    #[cfg(feature = "testkit")]
+    pub fn testkit_fail_next_mouse_install(&self) {
+        TESTKIT_FAIL_NEXT_MOUSE_INSTALL.store(true, Ordering::Release);
+    }
+
+    /// Testkit only: while `on`, a failed liveness check is counted instead of ending the lock
+    /// (see `testkit::liveness_misses`). For the `--mouse-diag` measurement only.
+    #[cfg(feature = "testkit")]
+    pub fn testkit_liveness_report_only(&self, on: bool) {
+        LIVENESS_REPORT_ONLY.store(on, Ordering::Release);
     }
 
     /// Testkit only: the engine thread sleeps for `duration`, as if hung. Run it in a child
@@ -336,7 +413,12 @@ impl Drop for Engine {
 struct EngineState {
     hwnd: HWND,
     session: Session,
+    /// The keyboard hook, installed for every lock.
     hook: Option<HHOOK>,
+    /// The mouse hook, installed when the mouse is locked.
+    mouse_hook: Option<HHOOK>,
+    /// What the current session blocks.
+    targets: LockTargets,
     commands: Receiver<Command>,
     events: Sender<EngineEvent>,
     watchdog: Watchdog,
@@ -350,14 +432,61 @@ struct EngineState {
     drain_started_ticks: u64,
     /// The countdown second last reported while locked.
     last_countdown_secs: Option<u64>,
-    /// Whether keyboard Raw Input is registered (only during a lock).
-    raw_input_registered: bool,
-    /// QPC ticks of the `WM_INPUT` whose hook-liveness check is pending.
-    pending_raw_ticks: Option<u64>,
-    /// Whether `ElevatedWindowBypass` was already sent this lock.
-    elevated_notified: bool,
-    /// Raw Input handles of the keyboards known this lock (snapshot at lock start plus arrivals).
-    known_keyboards: Vec<isize>,
+    /// Raw Input registered for this lock (only during a lock): `Some(mouse)`, where `mouse` says
+    /// whether mice are registered as well as keyboards.
+    raw_input: Option<bool>,
+    /// Per [`Watched`] hook: QPC ticks of the `WM_INPUT` whose liveness check is pending.
+    pending_checks: [Option<u64>; 2],
+    /// Per [`Watched`] hook: whether its elevated-window notice was already sent this lock.
+    elevated_notified: [bool; 2],
+    /// Raw Input handles of the devices known this lock (snapshot at lock start plus arrivals):
+    /// keyboards, and mice when the mouse is locked.
+    known_devices: Vec<(isize, DeviceClass)>,
+}
+
+/// A hook whose liveness the engine checks against Raw Input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Watched {
+    Keyboard = 0,
+    Mouse = 1,
+}
+
+impl Watched {
+    const fn timer(self) -> usize {
+        match self {
+            Watched::Keyboard => TIMER_HOOK_CHECK,
+            Watched::Mouse => TIMER_MOUSE_HOOK_CHECK,
+        }
+    }
+
+    fn last_callback_ticks(self) -> Option<u64> {
+        match self {
+            Watched::Keyboard => hook::last_callback_ticks(),
+            Watched::Mouse => hook::last_mouse_callback_ticks(),
+        }
+    }
+
+    /// Whether the window this kind of input goes to is elevated above KeyClean.
+    fn target_elevated(self) -> Option<bool> {
+        match self {
+            Watched::Keyboard => foreground::is_elevated_above_us(),
+            Watched::Mouse => foreground::is_elevated_under_cursor(),
+        }
+    }
+
+    const fn elevated_notice(self) -> EngineNotice {
+        match self {
+            Watched::Keyboard => EngineNotice::ElevatedWindowBypass,
+            Watched::Mouse => EngineNotice::ElevatedWindowMouseBypass,
+        }
+    }
+
+    const fn lost(self) -> EngineError {
+        match self {
+            Watched::Keyboard => EngineError::HookLost,
+            Watched::Mouse => EngineError::MouseHookLost,
+        }
+    }
 }
 
 thread_local! {
@@ -409,6 +538,8 @@ fn engine_thread(
         hwnd,
         session: Session::new(),
         hook: None,
+        mouse_hook: None,
+        targets: LockTargets::KEYBOARD,
         commands,
         events,
         watchdog,
@@ -418,10 +549,10 @@ fn engine_thread(
         session_notify,
         drain_started_ticks: 0,
         last_countdown_secs: None,
-        raw_input_registered: false,
-        pending_raw_ticks: None,
-        elevated_notified: false,
-        known_keyboards: Vec::new(),
+        raw_input: None,
+        pending_checks: [None; 2],
+        elevated_notified: [false; 2],
+        known_devices: Vec::new(),
     };
     let _ = STATE.try_with(|cell| *cell.borrow_mut() = Some(state));
     let _ = ready.send(Ok(hwnd.0 as isize));
@@ -450,8 +581,8 @@ fn engine_thread(
         .ok()
         .flatten();
     if let Some(state) = state {
-        if state.raw_input_registered {
-            let _ = raw_input::remove();
+        if let Some(mouse) = state.raw_input {
+            let _ = raw_input::remove(mouse);
         }
         if let Some(handle) = state.power_notify {
             // SAFETY: `handle` came from RegisterSuspendResumeNotification and is released once.
@@ -572,14 +703,20 @@ unsafe extern "system" fn window_proc(
             TIMER_SESSION => with_state(EngineState::on_session_timer),
             TIMER_DRAIN => with_state(EngineState::on_drain_timeout),
             TIMER_COUNTDOWN => with_state(EngineState::on_countdown_timer),
-            TIMER_HOOK_CHECK => with_state(EngineState::on_hook_check),
+            TIMER_HOOK_CHECK => with_state(|s| s.on_hook_check(Watched::Keyboard)),
+            TIMER_MOUSE_HOOK_CHECK => with_state(|s| s.on_hook_check(Watched::Mouse)),
             _ => {}
         },
         WM_INPUT => {
-            // Counted, never read: no GetRawInputData, so no key data is touched.
+            // Only the header is read (keyboard or mouse); never key, button or movement data.
             #[cfg(feature = "testkit")]
             RAW_INPUT_SEEN.fetch_add(1, Ordering::AcqRel);
-            try_with_state(EngineState::on_raw_input);
+            let source = raw_input::source(lparam);
+            #[cfg(feature = "testkit")]
+            if source == Some(RawSource::Mouse) {
+                RAW_MOUSE_SEEN.fetch_add(1, Ordering::AcqRel);
+            }
+            try_with_state(|s| s.on_raw_input(source));
             // The WM_INPUT docs require DefWindowProc so Windows can clean up.
             // SAFETY: default handling with the original arguments.
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
@@ -640,6 +777,18 @@ fn install_hook() -> Result<HHOOK, EngineError> {
     hook::install().map_err(|e| EngineError::hook_install(&e))
 }
 
+/// Installs the mouse hook. The testkit can make it fail without calling Windows.
+fn install_mouse_hook() -> Result<HHOOK, EngineError> {
+    #[cfg(feature = "testkit")]
+    if TESTKIT_FAIL_NEXT_MOUSE_INSTALL.swap(false, Ordering::AcqRel) {
+        return Err(EngineError::MouseHookInstall {
+            code: 0,
+            message: "testkit: forced failure".into(),
+        });
+    }
+    hook::install_mouse().map_err(|e| EngineError::mouse_hook_install(&e))
+}
+
 fn millis(d: Duration) -> u32 {
     u32::try_from(d.as_millis()).unwrap_or(u32::MAX).max(1)
 }
@@ -670,6 +819,7 @@ impl EngineState {
             dev_cap: safety_profile() == SafetyProfile::Dev,
             session_remaining: remaining(deadlines.map(|d| d.session)),
             hard_deadline_remaining: remaining(deadlines.map(|d| d.hard)),
+            targets: (self.session.state() != SessionState::Idle).then_some(self.targets),
         }));
     }
 
@@ -698,6 +848,15 @@ impl EngineState {
                     }
                 }
                 #[cfg(feature = "testkit")]
+                Command::DropMouseHook => {
+                    if let Some(handle) = self.mouse_hook {
+                        // SAFETY: as for `DropHook`, with the mouse hook from `hook::install_mouse`.
+                        let _ = unsafe {
+                            windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(handle)
+                        };
+                    }
+                }
+                #[cfg(feature = "testkit")]
                 Command::Hang(duration) => std::thread::sleep(duration),
             }
         }
@@ -708,20 +867,25 @@ impl EngineState {
             self.emit(EngineEvent::Error(EngineError::AlreadyActive));
             return;
         }
-        let plan: LockPlan = match plan_lock(request.duration, request.max_lock, safety_profile()) {
-            Ok(plan) => plan,
+        let checked = request.targets.checked().and_then(|targets| {
+            plan_lock(request.duration, request.max_lock, safety_profile())
+                .map(|plan| (targets, plan))
+        });
+        let (targets, plan): (LockTargets, LockPlan) = match checked {
+            Ok(checked) => checked,
             Err(e) => {
                 self.emit(EngineEvent::Error(EngineError::InvalidRequest(e)));
                 return;
             }
         };
+        self.targets = targets;
 
-        // Snapshot the keyboards before the hook goes in, so device changes during the lock can be
+        // Snapshot the devices before the hooks go in, so device changes during the lock can be
         // told apart from arrivals Windows may replay at registration. No names: those calls
         // could be slow. On error, start empty rather than fail the lock.
-        self.known_keyboards = devices::keyboard_handles().unwrap_or_default();
-        self.pending_raw_ticks = None;
-        self.elevated_notified = false;
+        self.known_devices = devices::lock_handles(targets.mouse).unwrap_or_default();
+        self.pending_checks = [None; 2];
+        self.elevated_notified = [false; 2];
 
         // One QPC reading anchors the session (MonoTime) and the hook (ticks).
         let start_ticks = qpc::ticks();
@@ -733,9 +897,11 @@ impl EngineState {
 
         let hard_ticks = start_ticks.saturating_add(qpc::duration_to_ticks(plan.hard_deadline));
         self.generation = self.generation.wrapping_add(1);
-        hook::begin_arming(self.generation, hard_ticks);
+        hook::begin_arming(self.generation, hard_ticks, targets.keyboard);
         self.watchdog_generation = Some(self.watchdog.arm(Instant::now() + plan.hard_deadline));
 
+        // The keyboard hook goes in for every lock: it carries the emergency chord. Both hooks
+        // pass everything while arming, so a failure here has blocked nothing.
         match install_hook() {
             Ok(handle) => self.hook = Some(handle),
             Err(e) => {
@@ -744,8 +910,19 @@ impl EngineState {
                 return;
             }
         }
-        match raw_input::register(self.hwnd) {
-            Ok(()) => self.raw_input_registered = true,
+        if targets.mouse {
+            match install_mouse_hook() {
+                Ok(handle) => self.mouse_hook = Some(handle),
+                Err(e) => {
+                    // `fail` ends the session and `finish` removes the keyboard hook again, so
+                    // nothing stays locked.
+                    self.fail(e);
+                    return;
+                }
+            }
+        }
+        match raw_input::register(self.hwnd, targets.mouse) {
+            Ok(()) => self.raw_input = Some(targets.mouse),
             Err(_) => self.emit(EngineEvent::Notice(EngineNotice::LivenessCheckUnavailable)),
         }
         hook::seed_from_held_keys();
@@ -789,12 +966,17 @@ impl EngineState {
         self.arm_countdown(remaining);
     }
 
-    /// A raw keyboard message arrived. While locked, checks shortly afterwards that the hook saw
-    /// it too.
-    fn on_raw_input(&mut self) {
+    /// A raw keyboard or mouse message arrived. While locked, checks shortly afterwards that the
+    /// matching hook saw it too. Mouse messages are only registered when the mouse hook exists.
+    fn on_raw_input(&mut self, source: Option<RawSource>) {
+        let watched = match source {
+            Some(RawSource::Keyboard) => Watched::Keyboard,
+            Some(RawSource::Mouse) if self.mouse_hook.is_some() => Watched::Mouse,
+            _ => return,
+        };
         if self.session.state() != SessionState::Locked
             || hook::phase() != Some(Phase::Locked)
-            || self.pending_raw_ticks.is_some()
+            || self.pending_checks[watched as usize].is_some()
         {
             return;
         }
@@ -803,60 +985,72 @@ impl EngineState {
         let armed = unsafe {
             SetTimer(
                 Some(self.hwnd),
-                TIMER_HOOK_CHECK,
+                watched.timer(),
                 millis(LIVENESS_CHECK_DELAY),
                 None,
             )
         };
         // If the timer can't be armed, the next WM_INPUT tries again.
         if armed != 0 {
-            self.pending_raw_ticks = Some(raw_ticks);
+            self.pending_checks[watched as usize] = Some(raw_ticks);
         }
     }
 
-    /// The hook-liveness check: ends the lock if the hook missed a key Raw Input saw, unless the
-    /// key went to an elevated window.
-    fn on_hook_check(&mut self) {
-        self.kill_timer(TIMER_HOOK_CHECK);
-        let Some(raw_ticks) = self.pending_raw_ticks.take() else {
+    /// The hook-liveness check: ends the lock if a hook missed input Raw Input saw, unless that
+    /// input went to an elevated window.
+    fn on_hook_check(&mut self, watched: Watched) {
+        self.kill_timer(watched.timer());
+        let Some(raw_ticks) = self.pending_checks[watched as usize].take() else {
             return;
         };
         if self.session.state() != SessionState::Locked || hook::phase() != Some(Phase::Locked) {
             return;
         }
-        let last_hook = hook::last_callback_ticks().map(QpcClock::at);
+        let last_hook = watched.last_callback_ticks().map(QpcClock::at);
         if liveness::hook_alive(QpcClock::at(raw_ticks), last_hook) {
             return;
         }
-        match foreground::is_elevated_above_us() {
+        #[cfg(feature = "testkit")]
+        if LIVENESS_REPORT_ONLY.load(Ordering::Acquire) {
+            LIVENESS_MISSES[watched as usize].fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        match watched.target_elevated() {
             Some(true) => {
-                if !self.elevated_notified {
-                    self.elevated_notified = true;
-                    self.emit(EngineEvent::Notice(EngineNotice::ElevatedWindowBypass));
+                if !self.elevated_notified[watched as usize] {
+                    self.elevated_notified[watched as usize] = true;
+                    self.emit(EngineEvent::Notice(watched.elevated_notice()));
                 }
             }
-            Some(false) => self.fail(EngineError::HookLost),
-            // No foreground window: inconclusive. The next keystroke arms a new check.
+            Some(false) => self.fail(watched.lost()),
+            // No target window: inconclusive. The next input arms a new check.
             None => {}
         }
     }
 
-    /// A keyboard was connected or disconnected. Reported only during a session, and only when it
-    /// differs from the keyboards known at lock start (Windows may replay arrivals of connected
-    /// devices when the window registers).
+    /// A keyboard or mouse was connected or disconnected. Reported only during a session, and
+    /// only when it differs from the devices known at lock start (Windows may replay arrivals of
+    /// connected devices when the window registers). Mice are only registered when the mouse is
+    /// locked.
     fn on_device_change(&mut self, change: u32, handle: isize) {
         if self.session.state() == SessionState::Idle {
             return;
         }
-        let known = self.known_keyboards.iter().position(|&h| h == handle);
+        let known = self.known_devices.iter().position(|&(h, _)| h == handle);
         match (change, known) {
             (GIDC_REMOVAL, Some(index)) => {
-                self.known_keyboards.swap_remove(index);
-                self.emit(EngineEvent::DeviceChanged(DeviceChange::Removed));
+                let (_, class) = self.known_devices.swap_remove(index);
+                self.emit(EngineEvent::DeviceChanged(DeviceChange::Removed(class)));
             }
             (GIDC_ARRIVAL, None) => {
-                self.known_keyboards.push(handle);
-                self.emit(EngineEvent::DeviceChanged(DeviceChange::Arrived));
+                // A quick Raw Input query, no names. A device that is neither (or already gone)
+                // isn't reported.
+                if let Some(class) = devices::class_of(handle)
+                    && (class == DeviceClass::Keyboard || self.targets.mouse)
+                {
+                    self.known_devices.push((handle, class));
+                    self.emit(EngineEvent::DeviceChanged(DeviceChange::Arrived(class)));
+                }
             }
             _ => {}
         }
@@ -898,8 +1092,7 @@ impl EngineState {
         }
         self.kill_timer(TIMER_SESSION);
         self.kill_timer(TIMER_COUNTDOWN);
-        self.kill_timer(TIMER_HOOK_CHECK);
-        self.pending_raw_ticks = None;
+        self.cancel_hook_checks();
         hook::enter_draining();
         self.emit_status();
 
@@ -990,32 +1183,39 @@ impl EngineState {
         self.kill_timer(TIMER_SESSION);
         self.kill_timer(TIMER_DRAIN);
         self.kill_timer(TIMER_COUNTDOWN);
-        self.kill_timer(TIMER_HOOK_CHECK);
+        self.cancel_hook_checks();
         self.last_countdown_secs = None;
-        self.pending_raw_ticks = None;
+        let mouse = self.mouse_hook.take();
         match self.hook.take() {
             Some(handle) => {
-                if hook::uninstall(handle).is_err() {
+                if !hook::uninstall(handle, mouse) {
                     self.emit(EngineEvent::Notice(EngineNotice::HookAlreadyRemoved));
                 }
             }
+            // The mouse hook is only ever installed after the keyboard hook.
             None => hook::clear(),
         }
-        if self.raw_input_registered {
+        if let Some(mice) = self.raw_input.take() {
             // Idle means no registration (invariant 4). If removal fails, say so; the registration
             // still ends with the process.
-            if raw_input::remove().is_err() {
+            if raw_input::remove(mice).is_err() {
                 self.emit(EngineEvent::Notice(EngineNotice::RawInputNotRemoved));
             }
-            self.raw_input_registered = false;
         }
-        self.known_keyboards.clear();
+        self.known_devices.clear();
         self.watchdog.disarm();
         self.watchdog_generation = None;
         if let Ok(reason) = self.session.finished() {
             self.emit(EngineEvent::SessionEnded { reason });
             self.emit_status();
         }
+    }
+
+    fn cancel_hook_checks(&mut self) {
+        for watched in [Watched::Keyboard, Watched::Mouse] {
+            self.kill_timer(watched.timer());
+        }
+        self.pending_checks = [None; 2];
     }
 
     fn kill_timer(&self, id: usize) {

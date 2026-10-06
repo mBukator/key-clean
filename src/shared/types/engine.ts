@@ -29,6 +29,14 @@ export interface EngineStatus {
     countdownSecs: number | null;
     /** Key into locales/en/strings.json for the latest notice, until the next lock starts. */
     notice: string | null;
+    /** What the current session blocks, or the last one once it ends; null before any lock. */
+    targets: LockTargets | null;
+}
+
+/** What a lock blocks. Mirrors `TargetsDto` in src-tauri/src/bridge.rs. */
+export interface LockTargets {
+    keyboard: boolean;
+    mouse: boolean;
 }
 
 /** Mirrors `LockOptionsDto` in src-tauri/src/bridge.rs. */
