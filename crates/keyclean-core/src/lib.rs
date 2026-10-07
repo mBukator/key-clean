@@ -10,6 +10,7 @@ pub mod devices;
 pub mod keystate;
 pub mod liveness;
 pub mod mouse;
+pub mod overlay;
 pub mod policy;
 pub mod presets;
 pub mod restart;

@@ -8,6 +8,9 @@ fn main() {
             "get_lock_options",
             "get_status",
             "list_devices",
+            "get_overlay_session",
+            "overlay_ready",
+            "overlay_tick",
         ]));
     if let Err(e) = tauri_build::try_build(attributes) {
         panic!("tauri build script failed: {e:#}");

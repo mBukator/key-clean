@@ -10,7 +10,8 @@ export type EndReason =
     | "sessionLock"
     | "sessionDisconnect"
     | "engineError"
-    | "userRequest";
+    | "userRequest"
+    | "overlayLost";
 
 export interface ErrorInfo {
     /** Key into locales/en/strings.json. */

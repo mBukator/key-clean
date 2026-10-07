@@ -40,6 +40,7 @@ const END_REASON_KEYS: Record<EndReason, StringKey> = {
     sessionDisconnect: "endReason.sessionDisconnect",
     engineError: "endReason.engineError",
     userRequest: "endReason.userRequest",
+    overlayLost: "endReason.overlayLost",
 };
 
 const DURATION_KEYS = {
