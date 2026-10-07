@@ -75,5 +75,19 @@
     "notice.mouse_disconnected": "Mouse or touchpad disconnected.",
     "notice.mouse_connected": "A mouse or touchpad was connected. It is locked too.",
     "notice.engine_restarted": "KeyClean's lock engine stopped and was restarted. Nothing is locked.",
-    "notice.liveness_unavailable": "KeyClean can't check that the lock is still working. The timer and Ctrl+Alt+K still end it."
+    "notice.liveness_unavailable": "KeyClean can't check that the lock is still working. The timer and Ctrl+Alt+K still end it.",
+    "overlay.inputLocked": "Input locked · {devices}",
+    "overlay.devices.keyboard": "Keyboard",
+    "overlay.devices.mouse": "Mouse and touchpad",
+    "overlay.devices.all": "Keyboard, mouse and touchpad",
+    "overlay.unlockingIn.one": "Unlocking in {count} second",
+    "overlay.unlockingIn.other": "Unlocking in {count} seconds",
+    "overlay.progressLabel": "Time remaining in the lock",
+    "overlay.emergency.label": "Emergency unlock:",
+    "overlay.emergency.hint": "Press the shortcut to unlock immediately.",
+    "overlay.key.ctrl": "Ctrl",
+    "overlay.key.alt": "Alt",
+    "overlay.key.k": "K",
+    "overlay.key.plus": "+",
+    "overlay.mouseHint": "Touchpad gestures such as scrolling and swiping still work during the lock."
 }

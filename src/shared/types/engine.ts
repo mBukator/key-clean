@@ -48,6 +48,17 @@ export interface LockOptions {
     defaultSeconds: number;
 }
 
+/** What the overlay shows before the engine's first status. Mirrors `OverlaySessionDto` in src-tauri/src/overlay.rs. */
+export interface OverlaySession {
+    /** The lock attempt this overlay belongs to; sent back with `overlay_ready` and `overlay_tick`. */
+    attempt: number;
+    /** The lock length in seconds, after the safety policy. */
+    seconds: number;
+    keyboard: boolean;
+    mouse: boolean;
+    devCap: boolean;
+}
+
 export type DeviceKind = "keyboard" | "mouse" | "touchpad" | "touchscreen" | "pen";
 
 /** How far KeyClean can control a device. */

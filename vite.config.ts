@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -26,5 +27,12 @@ export default defineConfig({
         target: "chrome105",
         minify: !process.env.TAURI_ENV_DEBUG,
         sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+        // Two pages: the dashboard and the full-screen overlay (src-tauri/src/overlay.rs).
+        rolldownOptions: {
+            input: {
+                main: fileURLToPath(new URL("./index.html", import.meta.url)),
+                overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+            },
+        },
     },
 });

@@ -105,6 +105,7 @@ export function App() {
     const [requestError, setRequestError] = useState<ErrorInfo | null>(null);
     const [lockKeyboard, setLockKeyboard] = useState(true);
     const [lockMouse, setLockMouse] = useState(false);
+    const [lockPending, setLockPending] = useState(false);
 
     useEffect(() => {
         let unlisten: (() => void) | undefined;
@@ -181,8 +182,14 @@ export function App() {
             return;
         }
         setRequestError(null);
-        invoke("lock_input", { seconds, keyboard: lockKeyboard, mouse: lockMouse }).catch(
+        // The request waits for the overlay to confirm it is visible (up to ~2 s).
+        setLockPending(true);
+        invoke("lock_input", { seconds, keyboard: lockKeyboard, mouse: lockMouse }).then(
+            () => {
+                setLockPending(false);
+            },
             (err: unknown) => {
+                setLockPending(false);
                 setRequestError(toErrorInfo(err));
             }
         );
@@ -278,7 +285,7 @@ export function App() {
                     <button
                         type="button"
                         onClick={lock}
-                        disabled={!canLock}
+                        disabled={!canLock || lockPending}
                         className="rounded bg-neutral-900 px-5 py-3 text-white disabled:opacity-40"
                     >
                         {t("lock.button")}
