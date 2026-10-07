@@ -21,7 +21,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
 | M4 Device detection                            | §52 Phase 1 | **done**                                    |
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
+| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
 | M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
 | M8 System tray                                 | §55 Phase 4 | not started                                 |
 | M9 Global shortcut                             | §55 Phase 4 | not started                                 |
@@ -294,8 +294,44 @@ Acceptance:
 
 ### M6 - Full-screen overlay
 
-Status: not started. Manual test: `docs/testing/manual/M6.md`. Design: `docs/design/overlay.png`
-(see `docs/design/README.md`).
+Status: **done** (verified by Max, 2026-10-07). Verification: `cargo run -p keyclean-e2e`
+(S14, S34-S40), `--overlay-latency` (S41) and Part B of `docs/testing/manual/M6.md`. Design:
+`docs/design/overlay.png` (see `docs/design/README.md`).
+
+Harness, 2026-10-07: **35 passed, 1 failed** in 191 s. S23 failed: `taskkill` without `/F` reached
+only the overlay, so the lock ended (input back after 4 ms) but the app kept running. Fixed: a close
+request on the overlay now ends the lock and exits KeyClean (Max's decision). Re-run on the fix:
+S23 and S37 passed (app exited 263 ms after `taskkill`). S34 confirmed 769 ms after the request, S14 passed with the overlay focused. Latency (S41):
+cold 393 ms, warm p50 260 ms, p95 283 ms; release build 216-253 ms, so ADR 0001's criterion is met on
+Windows 11 without a pre-created window. Manual Part B: all steps passed. Touchpad gestures (Task
+View, Show desktop, four-finger swipe) never ended a lock: the overlay stayed on its monitor, and
+after Show desktop the taskbar showed over it. Optional steps 9 (second monitor) and 10 (release
+latency) passed; step 11 (Windows 10) was skipped.
+
+Max's decisions (plan approved 2026-10-06): the monitor under the cursor; any overlay loss ends the
+lock, a virtual desktop switch too; Unlock now hidden while the mouse is locked; the system monospace
+font; the main window comes back after unlock; a heartbeat catches a crashed or hung page.
+
+Done in code (ADR 0014, research note `docs/research/m6-overlay.md`):
+
+- **Overlay first, then the lock.** The app builds the overlay hidden on the monitor under the
+  cursor, sizes it in physical pixels, shows it, and asks the engine to lock only after the page
+  confirms it is visible, within 2 s of the request. Otherwise nothing is locked and the window
+  says so. This reverses §12's order (ADR 0014). The engine and its protocol are unchanged.
+- **Watched during the lock.** On every countdown status the app checks the overlay: closed,
+  hidden, minimized, on another virtual desktop, or silent for 3 s ends the lock ("its lock screen
+  was closed or hidden"). Nothing runs at idle.
+- **Overlay page** (`overlay.html`, `src/ui/overlay/`): countdown with segmented progress, locked
+  devices from the engine's status, Ctrl + Alt + K key caps, "Unlocking in N seconds" in the last
+  5 s, DEV CAP, the current notice; Unlock now only when the mouse is free.
+- **End of the lock.** The overlay is destroyed at `Unlocking`, and on a refused request or a dead
+  engine; the main window comes back. Closing the main window still exits.
+- **Harness.** S14 now sends Ctrl+Alt+K with the overlay focused; S34-S40 check the order, the
+  timer end, a missing confirmation, and closing, hiding, minimizing or silencing the overlay;
+  opt-in S41 measures latency. The harness exe embeds the UI
+  (`cargo build -p keyclean --features tauri/custom-protocol`).
+
+Not verified: Windows 10 latency (no machine), a second monitor and mixed scaling, large monitors.
 
 Scope: overlay on **the monitor under the cursor first** (Max's decision; all monitors later). Order:
 show the overlay, wait for the webview's ack (after a double `requestAnimationFrame`), then engage the
@@ -306,12 +342,12 @@ meet the rule even with a pre-created hidden window, revisit ADR 0001.
 
 Acceptance (§60 "Overlay"):
 
-- [ ] Full-screen overlay appears
-- [ ] Countdown is visible
-- [ ] Locked devices are visible
-- [ ] Emergency shortcut is visible
-- [ ] Overlay disappears after unlock
-- [ ] Never locked without a confirmed-visible overlay
+- [x] Full-screen overlay appears
+- [x] Countdown is visible
+- [x] Locked devices are visible
+- [x] Emergency shortcut is visible
+- [x] Overlay disappears after unlock
+- [x] Never locked without a confirmed-visible overlay
 
 ### M7 - MVP dashboard
 

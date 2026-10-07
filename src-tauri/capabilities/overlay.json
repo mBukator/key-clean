@@ -1,0 +1,14 @@
+{
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "overlay",
+    "description": "Overlay window: listen for engine status, read the status and what to show, confirm it is visible, answer each countdown, end the lock. It can't start a lock.",
+    "windows": ["overlay-*"],
+    "permissions": [
+        "core:event:default",
+        "allow-get-status",
+        "allow-get-overlay-session",
+        "allow-overlay-ready",
+        "allow-overlay-tick",
+        "allow-unlock-input"
+    ]
+}

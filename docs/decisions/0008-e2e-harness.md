@@ -32,14 +32,18 @@ Add an opt-in harness that Max runs by hand: `cargo run -p keyclean-e2e`.
   (AutoHotkey, PowerToys) or there is no interactive desktop, the harness stops with exit code 2
   instead of reporting false results.
 - **Safety.** Every lock is clamped to the development caps; the real Ctrl+Alt+K always works; an
-  outside PowerShell process kills the harness after 6 minutes; child processes are killed when a
-  scenario ends.
+  outside PowerShell process kills the harness after 6 minutes (10 minutes from M6); child processes
+  are killed when a scenario ends.
 - **Code layout.** All `unsafe` code (injection, observer hook, key state, window helpers) lives in
   `keyclean-win` behind a non-default `testkit` feature. The harness crate is `#![forbid(unsafe_code)]`.
   `cargo test` compiles it but never runs it.
 - **App hook.** Debug builds of the app read `KEYCLEAN_E2E_AUTOLOCK=<seconds>` and lock right after
   startup (clamped to 15 s), so the harness can test the app without clicking. Release builds don't
   contain it.
+  From M6 (ADR 0014) the autolock starts once the event loop is ready and goes through the overlay
+  like every lock; `KEYCLEAN_E2E_AUTOLOCK_REPEAT` repeats it and `KEYCLEAN_E2E_OVERLAY=no-ack|no-tick`
+  injects overlay faults. The app exe the harness uses must embed the UI
+  (`cargo build -p keyclean --features tauri/custom-protocol`).
 - **CI trial.** `.github/workflows/e2e.yml` runs the harness on `windows-latest`, triggered manually only.
   The environment check reports whether hosted runners can run it.
 

@@ -102,6 +102,7 @@ bun install                  # deps + husky hooks
 bun tauri dev                # run the app (Max only — it can engage a real lock)
 bun run build                # frontend → dist/ (src-tauri needs dist/ to compile)
 bun tauri build              # release build -> target/release/keyclean.exe; bundling off until M11
+cargo build -p keyclean --features tauri/custom-protocol   # debug exe with the UI embedded (harness, manual tests; run bun run build first)
 cargo test --workspace       # pure-logic tests (never installs hooks)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all              # / --check
@@ -110,7 +111,7 @@ bun run lint
 bun run format               # / format:check
 bunx merlin                  # interactive commit wizard
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock (add `-- --mouse` for the mouse too)
-cargo run -p keyclean-e2e    # Max only — automated M1-M5 checks (~5 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33)
+cargo run -p keyclean-e2e    # Max only — automated M1-M6 checks (~7 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33, --overlay-latency adds S41)
 ```
 
 If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).

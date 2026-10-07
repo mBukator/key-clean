@@ -9,15 +9,17 @@
 
 mod bridge;
 mod devices;
-// Used by the tray and notifications once they land.
+// Partly used until the tray and notifications land.
 #[allow(dead_code)]
 mod i18n;
+mod overlay;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use keyclean_win::SessionState;
 use keyclean_win::keyclean_core::policy::SafetyProfile;
 use keyclean_win::keyclean_core::presets;
 use keyclean_win::keyclean_core::restart::RestartBudget;
@@ -25,10 +27,11 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
+use overlay::OverlayState;
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
 const RELAY_DRAIN: Duration = Duration::from_secs(1);
@@ -63,12 +66,13 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Locks the keyboard, the mouse, or both for `seconds`, which must be one of the presets. The
-/// engine still applies the safety policy (max lock, hard deadline, debug dev cap) and rejects a
-/// lock that blocks nothing.
+/// Locks the keyboard, the mouse, or both for `seconds`, which must be one of the presets. Shows
+/// the overlay first and locks only once it is confirmed visible (invariant 11). The engine still
+/// applies the safety policy (max lock, hard deadline, debug dev cap) and rejects a lock that
+/// blocks nothing. Async because building a window in a synchronous command deadlocks on Windows.
 #[tauri::command]
-fn lock_input(
-    engine: State<'_, EngineSlot>,
+async fn lock_input(
+    app: AppHandle,
     seconds: u64,
     keyboard: bool,
     mouse: bool,
@@ -78,10 +82,7 @@ fn lock_input(
         return Err(ErrorDto::not_a_preset(seconds));
     }
     let request = LockRequest::new(duration).with_targets(LockTargets { keyboard, mouse });
-    match guard(&engine.0).as_ref() {
-        Some(engine) => engine.lock(request).map_err(|e| ErrorDto::from(&e)),
-        None => Err(ErrorDto::from(&EngineError::NotRunning)),
-    }
+    overlay::lock(app, request).await
 }
 
 /// Asks the engine to end the current lock now (`UserRequest`).
@@ -130,8 +131,6 @@ fn start_engine(app: &AppHandle) {
             // overwritten.
             set_engine(true, None);
             app.manage(RelayDone(Mutex::new(forward_events(app.clone(), events))));
-            #[cfg(debug_assertions)]
-            e2e_autolock(&engine);
             Some(engine)
         }
         Err(e) => {
@@ -143,20 +142,57 @@ fn start_engine(app: &AppHandle) {
     app.manage(EngineSlot(Mutex::new(engine)));
 }
 
-/// Debug builds only: `KEYCLEAN_E2E_AUTOLOCK=<seconds>` locks right after startup, so the
-/// end-to-end harness can test the app without clicking (ADR 0008). Clamped to the dev cap;
-/// release builds don't contain this.
+/// Debug builds only: `KEYCLEAN_E2E_AUTOLOCK=<seconds>` locks the keyboard right after startup,
+/// so the end-to-end harness can test the app without clicking (ADR 0008). Goes through the
+/// overlay like every lock (invariant 11). Clamped to the dev cap; release builds don't contain
+/// this.
+///
+/// `KEYCLEAN_E2E_AUTOLOCK_REPEAT=<n>` (1-20, default 1) locks `n` times in a row, each once the
+/// previous lock has ended and a second has passed, so the harness can measure the overlay with
+/// WebView2 already warm.
 #[cfg(debug_assertions)]
-fn e2e_autolock(engine: &EngineClient) {
+fn e2e_autolock(app: &AppHandle) {
     let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
         .ok()
         .and_then(|v| v.parse::<u64>().ok());
-    if let Some(seconds) = seconds {
-        let duration = Duration::from_secs(seconds.clamp(1, 15));
-        if let Err(e) = engine.lock(LockRequest::new(duration)) {
-            eprintln!("[keyclean] e2e autolock failed: {}", e.details());
+    let repeat = std::env::var("KEYCLEAN_E2E_AUTOLOCK_REPEAT")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map_or(1, |n| n.clamp(1, 20));
+    let Some(seconds) = seconds else {
+        return;
+    };
+    let duration = Duration::from_secs(seconds.clamp(1, 15));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for n in 0..repeat {
+            if n > 0 {
+                // Debug-only polling, between harness locks.
+                let idle = || {
+                    app.try_state::<StatusStore>()
+                        .is_some_and(|store| guard(&store.0).is_idle())
+                };
+                pause(Duration::from_secs(1)).await;
+                let waited = Instant::now();
+                while !idle() {
+                    if waited.elapsed() > Duration::from_secs(30) {
+                        eprintln!("[keyclean] e2e autolock stopped: the lock didn't end");
+                        return;
+                    }
+                    pause(Duration::from_millis(200)).await;
+                }
+                pause(Duration::from_secs(1)).await;
+            }
+            if let Err(e) = overlay::lock(app.clone(), LockRequest::new(duration)).await {
+                eprintln!("[keyclean] e2e autolock failed: {}", e.details);
+            }
         }
-    }
+    });
+}
+
+#[cfg(debug_assertions)]
+async fn pause(d: Duration) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(d)).await;
 }
 
 /// Relays engine events to the main window. Ends when the engine stops; if the engine process
@@ -194,7 +230,10 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
                     }
                     status.clone()
                 };
-                let _ = app.emit_to(MAIN_WINDOW, STATUS_EVENT, snapshot);
+                let idle = snapshot.is_idle();
+                // To every window: the main window and the overlay.
+                let _ = app.emit(STATUS_EVENT, snapshot);
+                follow_overlay(&app, &event, idle);
             }
             if engine_died {
                 restart_engine(&app);
@@ -210,6 +249,25 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
     }
 }
 
+/// Keeps the overlay in step with the session: checked on every countdown status during a lock,
+/// closed once the lock ends or a request is refused.
+fn follow_overlay(app: &AppHandle, event: &EngineEvent, idle: bool) {
+    match event {
+        EngineEvent::Status(status) => match status.state {
+            SessionState::Starting | SessionState::Locked => overlay::check_soon(app),
+            SessionState::Unlocking | SessionState::Idle => overlay::finish(app),
+        },
+        // A dead engine released the lock.
+        EngineEvent::Error(EngineError::EngineProcess(_)) => overlay::finish(app),
+        // A refused request ends with one of these and no status. Other errors either come during
+        // a lock (a status follows) or don't concern the lock request.
+        EngineEvent::Error(EngineError::AlreadyActive | EngineError::InvalidRequest(_)) if idle => {
+            overlay::finish(app);
+        }
+        _ => {}
+    }
+}
+
 fn is_exiting(app: &AppHandle) -> bool {
     app.try_state::<Exiting>()
         .is_some_and(|e| e.0.load(Ordering::SeqCst))
@@ -222,7 +280,7 @@ fn update_status(app: &AppHandle, update: impl FnOnce(&mut StatusDto)) {
             update(&mut status);
             status.clone()
         };
-        let _ = app.emit_to(MAIN_WINDOW, STATUS_EVENT, snapshot);
+        let _ = app.emit(STATUS_EVENT, snapshot);
     }
 }
 
@@ -315,6 +373,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
             eprintln!("[keyclean] close guard: {guarded} helper windows");
+            app.manage(OverlayState::new());
             start_engine(app.handle());
             devices::start(app.handle());
             Ok(())
@@ -324,16 +383,29 @@ pub fn run() {
             unlock_input,
             get_lock_options,
             get_status,
-            list_devices
+            list_devices,
+            overlay::get_overlay_session,
+            overlay::overlay_ready,
+            overlay::overlay_tick
         ])
         .build(tauri::generate_context!());
 
     match app {
-        Ok(app) => app.run(|handle, event| {
-            if let RunEvent::Exit = event {
+        Ok(app) => app.run(|handle, event| match event {
+            // Closing the main window exits, also while the overlay is open.
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } if label == MAIN_WINDOW => handle.exit(0),
+            // Once the event loop runs, so the overlay's 2 s budget doesn't include startup.
+            #[cfg(debug_assertions)]
+            RunEvent::Ready => e2e_autolock(handle),
+            RunEvent::Exit => {
                 devices::stop(handle);
                 stop_engine(handle);
             }
+            _ => {}
         }),
         Err(err) => {
             eprintln!("KeyClean failed to start: {err}");
@@ -363,7 +435,8 @@ mod tests {
             "]",
         )
         .split(',')
-        .map(|name| name.trim().to_owned())
+        .filter_map(|name| name.trim().rsplit("::").next())
+        .map(str::to_owned)
         .filter(|name| !name.is_empty())
         .collect();
         let listed: BTreeSet<String> = between(include_str!("../build.rs"), ".commands(&[", "]")
@@ -371,21 +444,55 @@ mod tests {
             .map(|name| name.trim().trim_matches('"').to_owned())
             .filter(|name| !name.is_empty())
             .collect();
-        let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
-        let allowed: BTreeSet<String> = capability["permissions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|p| p.as_str()?.strip_prefix("allow-"))
-            .map(|name| name.replace('-', "_"))
-            .collect();
+        let allowed_by = |capability: &str| -> BTreeSet<String> {
+            let capability: serde_json::Value = serde_json::from_str(capability).unwrap();
+            capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.as_str()?.strip_prefix("allow-"))
+                .map(|name| name.replace('-', "_"))
+                .collect()
+        };
+        let main = allowed_by(include_str!("../capabilities/main.json"));
+        let overlay = allowed_by(include_str!("../capabilities/overlay.json"));
+        let allowed: BTreeSet<String> = main.union(&overlay).cloned().collect();
 
         assert!(!handler.is_empty());
         assert_eq!(handler, listed, "build.rs must list every command");
         assert_eq!(
             handler, allowed,
-            "capabilities/main.json must allow every command"
+            "the capabilities together must allow every command"
         );
+    }
+
+    /// Each window gets only what it needs: the overlay page never starts a lock or reads the
+    /// device list, and the main window never speaks for the overlay.
+    #[test]
+    fn windows_get_only_their_commands() {
+        let permissions = |capability: &str| -> Vec<String> {
+            let capability: serde_json::Value = serde_json::from_str(capability).unwrap();
+            capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p.as_str().map(str::to_owned))
+                .collect()
+        };
+        let overlay = permissions(include_str!("../capabilities/overlay.json"));
+        for denied in ["allow-lock-input", "allow-list-devices"] {
+            assert!(!overlay.iter().any(|p| p == denied), "overlay has {denied}");
+        }
+        let main = permissions(include_str!("../capabilities/main.json"));
+        for denied in [
+            "allow-overlay-ready",
+            "allow-overlay-tick",
+            "allow-get-overlay-session",
+        ] {
+            assert!(
+                !main.iter().any(|p| p == denied),
+                "main window has {denied}"
+            );
+        }
     }
 }

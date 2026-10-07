@@ -1,7 +1,10 @@
 //! Process-window and workstation helpers for the harness.
 
 use windows::Win32::Foundation::{
-    ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT, WPARAM,
+    ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, POINT, RECT, WPARAM,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
 };
 use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::UI::HiDpi::{
@@ -9,9 +12,10 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::{GetRegisteredRawInputDevices, RAWINPUTDEVICE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
-    IsWindowVisible, PostMessageW, SC_CLOSE, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NULL,
-    WM_SYSCOMMAND,
+    EnumWindows, GWL_EXSTYLE, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, SC_CLOSE,
+    SHOW_WINDOW_CMD, SMTO_ABORTIFHUNG, SW_HIDE, SW_MINIMIZE, SendMessageTimeoutW, ShowWindowAsync,
+    WM_NULL, WM_SYSCOMMAND, WS_EX_TOPMOST,
 };
 use windows::core::BOOL;
 
@@ -100,17 +104,75 @@ pub fn request_close(pid: u32, class: &str) -> usize {
         .filter(|&hwnd| window_info(hwnd).class == class)
         .collect();
     for &hwnd in &targets {
-        // SAFETY: PostMessageW only enqueues; a window that just closed makes it fail harmlessly.
-        let _ = unsafe {
-            PostMessageW(
-                Some(HWND(hwnd as *mut _)),
-                WM_SYSCOMMAND,
-                WPARAM(SC_CLOSE as usize),
-                LPARAM(0),
-            )
-        };
+        request_close_window(hwnd);
     }
     targets.len()
+}
+
+/// Asks one window to close, exactly as clicking its X button does (`WM_SYSCOMMAND` /
+/// `SC_CLOSE`). Returns false if the request couldn't be posted (e.g. the window is gone).
+pub fn request_close_window(hwnd: isize) -> bool {
+    // SAFETY: PostMessageW only enqueues; a window that just closed makes it fail harmlessly.
+    unsafe {
+        PostMessageW(
+            Some(HWND(hwnd as *mut _)),
+            WM_SYSCOMMAND,
+            WPARAM(SC_CLOSE as usize),
+            LPARAM(0),
+        )
+    }
+    .is_ok()
+}
+
+/// Whether the window has the always-on-top extended style (`WS_EX_TOPMOST`).
+fn is_topmost(hwnd: isize) -> bool {
+    // SAFETY: reading a window's extended style has no preconditions; a window that just closed
+    // makes it return 0.
+    let ex_style = unsafe { GetWindowLongPtrW(HWND(hwnd as *mut _), GWL_EXSTYLE) };
+    (ex_style as u32) & WS_EX_TOPMOST.0 != 0
+}
+
+/// The app's full-screen overlay: the first visible, always-on-top (`WS_EX_TOPMOST`) top-level
+/// window of process `pid` with class `class`, with its rectangle. The app's main window isn't
+/// topmost, so during a lock this is the overlay.
+pub fn overlay_window(pid: u32, class: &str) -> Option<(isize, Rect)> {
+    visible_windows(pid)
+        .into_iter()
+        .filter(|&hwnd| is_topmost(hwnd) && window_info(hwnd).class == class)
+        .find_map(|hwnd| Some((hwnd, rect_of(hwnd)?)))
+}
+
+/// The first visible top-level window of process `pid` with class `class` that isn't topmost:
+/// the app's main window, not its overlay.
+pub fn main_window(pid: u32, class: &str) -> Option<isize> {
+    visible_windows(pid)
+        .into_iter()
+        .find(|&hwnd| !is_topmost(hwnd) && window_info(hwnd).class == class)
+}
+
+/// Whether `hwnd` still names a window (visible or not). A destroyed window doesn't.
+pub fn window_exists(hwnd: isize) -> bool {
+    // SAFETY: IsWindow accepts any value, including handles of destroyed windows.
+    unsafe { IsWindow(Some(HWND(hwnd as *mut _))) }.as_bool()
+}
+
+fn show_async(hwnd: isize, cmd: SHOW_WINDOW_CMD) -> bool {
+    // SAFETY: ShowWindowAsync only posts the request to the window's thread, so a window of
+    // another process can't make this call wait; a window that just closed makes it fail
+    // harmlessly.
+    unsafe { ShowWindowAsync(HWND(hwnd as *mut _), cmd) }.as_bool()
+}
+
+/// Hides a window (`SW_HIDE`), as another program could. Returns false if the request couldn't
+/// be posted.
+pub fn hide_window(hwnd: isize) -> bool {
+    show_async(hwnd, SW_HIDE)
+}
+
+/// Minimizes a window (`SW_MINIMIZE`), as another program could. Returns false if the request
+/// couldn't be posted.
+pub fn minimize_window(hwnd: isize) -> bool {
+    show_async(hwnd, SW_MINIMIZE)
 }
 
 /// Makes this process per-monitor DPI aware, so window positions and mouse coordinates are both
@@ -133,20 +195,55 @@ pub struct Rect {
     pub bottom: i32,
 }
 
+impl From<RECT> for Rect {
+    fn from(rect: RECT) -> Self {
+        Rect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        }
+    }
+}
+
+fn rect_of(hwnd: isize) -> Option<Rect> {
+    let mut rect = RECT::default();
+    // SAFETY: `rect` is writable; a window that just closed makes the call fail harmlessly.
+    unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut rect) }.ok()?;
+    Some(rect.into())
+}
+
 /// The rectangle of the first visible top-level window of process `pid` with class `class`.
 pub fn window_rect(pid: u32, class: &str) -> Option<Rect> {
     let hwnd = visible_windows(pid)
         .into_iter()
         .find(|&hwnd| window_info(hwnd).class == class)?;
-    let mut rect = RECT::default();
-    // SAFETY: `rect` is writable; a window that just closed makes the call fail harmlessly.
-    unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut rect) }.ok()?;
-    Some(Rect {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-    })
+    rect_of(hwnd)
+}
+
+/// The full rectangle (`rcMonitor`, not the work area) of the monitor under the cursor, in
+/// physical pixels (after [`make_dpi_aware`]).
+pub fn monitor_rect_under_cursor() -> Option<Rect> {
+    let mut point = POINT::default();
+    // SAFETY: `point` is writable.
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    // SAFETY: no preconditions; MONITOR_DEFAULTTONEAREST always returns a monitor.
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `info` is writable and its `cbSize` names the MONITORINFO layout.
+    unsafe { GetMonitorInfoW(monitor, &mut info) }
+        .as_bool()
+        .then(|| info.rcMonitor.into())
+}
+
+/// The foreground window, if there is one.
+pub fn foreground_hwnd() -> Option<isize> {
+    // SAFETY: no preconditions; returns a null handle if no window is in the foreground.
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.is_invalid()).then_some(hwnd.0 as isize)
 }
 
 /// The process that owns the foreground window, if there is one.

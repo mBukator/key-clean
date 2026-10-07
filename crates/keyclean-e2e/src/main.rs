@@ -1,14 +1,20 @@
-//! Automated end-to-end checks for KeyClean's milestones M1-M5 (ADR 0008).
+//! Automated end-to-end checks for KeyClean's milestones M1-M6 (ADR 0008).
 //!
 //! **This engages real keyboard and mouse locks.** Run it by hand only, never from `cargo test`
 //! or by an agent. Each lock is clamped to the development caps (15 s, 20 s hard deadline), the
-//! real Ctrl+Alt+K works throughout, and an outside watchdog kills this process after 7 minutes.
+//! real Ctrl+Alt+K works throughout, and an outside watchdog kills this process after 10 minutes.
+//!
+//! The app checks need a debug app exe with the UI embedded (`tauri/custom-protocol`); a plain
+//! `cargo build -p keyclean` loads the UI from a dev server, so its overlay never confirms.
 //!
 //! ```text
 //! cargo build -p keyclean-win --example lock_smoke
-//! bun run build && cargo build -p keyclean
-//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag]
+//! bun run build && cargo build -p keyclean --features tauri/custom-protocol
+//! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--overlay-latency]
 //! ```
+//!
+//! `--overlay-latency` adds S41: ten 1 s locks in one app launch, reporting how long the overlay
+//! takes to confirm, cold and warm (about 45 s more).
 //!
 //! Exit codes: 0 all passed, 1 a check failed, 2 the environment check failed (injected keys or
 //! mouse moves don't reach the observer: another hook, or no interactive desktop), 3 setup error.
@@ -33,9 +39,10 @@ use harness::EngineRig;
 use report::Report;
 use scenarios::{Ctx, Outcome};
 
-/// The outside watchdog's limit on the whole run. The default run takes about 5 minutes (the M5
-/// mouse checks add about 40 s).
-const RUN_LIMIT: Duration = Duration::from_secs(420);
+/// The outside watchdog's limit on the whole run. The default run takes about 7 minutes (the M5
+/// mouse checks add about 40 s, the M6 overlay checks S34-S40 about 100 s: seven app launches of
+/// 10-17 s each, settle time included); `--overlay-latency` adds about 45 s.
+const RUN_LIMIT: Duration = Duration::from_secs(600);
 
 const EXIT_FAILED: i32 = 1;
 const EXIT_ENVIRONMENT: i32 = 2;
@@ -50,6 +57,7 @@ struct Options {
     stall: bool,
     raw_diag: bool,
     mouse_diag: bool,
+    overlay_latency: bool,
     only: Option<Vec<String>>,
 }
 
@@ -61,6 +69,7 @@ impl Options {
             stall: false,
             raw_diag: false,
             mouse_diag: false,
+            overlay_latency: false,
             only: None,
         };
         let mut args = std::env::args().skip(1);
@@ -79,6 +88,7 @@ impl Options {
                 "--stall" => options.stall = true,
                 "--raw-diag" => options.raw_diag = true,
                 "--mouse-diag" => options.mouse_diag = true,
+                "--overlay-latency" => options.overlay_latency = true,
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown option {other}\n\n{USAGE}")),
             }
@@ -87,13 +97,14 @@ impl Options {
     }
 }
 
-const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--only S2,S11]
-  --only IDS      run only these checks (comma-separated IDs from the report)
-  --skip-app      skip the scenarios that start the app (target/debug/keyclean.exe)
-  --session-lock  also lock the workstation (you'll have to sign back in); runs last
-  --stall         also stall the hook past Windows' timeout (S20; input lags up to 1 s once)
-  --raw-diag      also run S25: the lost-hook check after each system shortcut (opens Game Bar)
-  --mouse-diag    also run S33: you use the touchpad during a 15 s mouse-only lock (prompts)";
+const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--overlay-latency] [--only S2,S11]
+  --only IDS         run only these checks (comma-separated IDs from the report)
+  --skip-app         skip the scenarios that start the app (target/debug/keyclean.exe)
+  --session-lock     also lock the workstation (you'll have to sign back in); runs last
+  --stall            also stall the hook past Windows' timeout (S20; input lags up to 1 s once)
+  --raw-diag         also run S25: the lost-hook check after each system shortcut (opens Game Bar)
+  --mouse-diag       also run S33: you use the touchpad during a 15 s mouse-only lock (prompts)
+  --overlay-latency  also run S41: overlay confirmation times over ten 1 s locks (about 45 s)";
 
 /// Kills this process after `RUN_LIMIT`, from outside, in case the harness hangs. Disarmed on
 /// drop.
@@ -145,9 +156,10 @@ fn main() {
 }
 
 fn run(options: &Options) -> i32 {
-    println!("KeyClean end-to-end checks (M1-M5)");
+    println!("KeyClean end-to-end checks (M1-M6)");
     println!(
-        "This locks your keyboard and mouse several times over about 5 minutes (7 minutes at most)."
+        "This locks your keyboard and mouse several times over about 7 minutes (10 minutes at \
+         most)."
     );
     println!("  - Hands off the keyboard, mouse and touchpad until it finishes.");
     println!("  - Click into an empty Notepad window now (anything that leaks lands there) and");
@@ -236,6 +248,9 @@ fn run(options: &Options) -> i32 {
         scenarios.insert(at, scenarios::hook_timeout_scenario());
     }
     scenarios.extend(scenarios::process_scenarios(options.skip_app));
+    if options.overlay_latency && !options.skip_app {
+        scenarios.push(scenarios::overlay_latency_scenario());
+    }
     // Last of the observer checks: touchpad gestures pass the keyboard hook of a mouse-only lock
     // as shortcuts (Task View, desktop switch) and could spoil the checks after them.
     if options.mouse_diag {
@@ -265,8 +280,14 @@ fn run(options: &Options) -> i32 {
                     " (S20 also needs --stall)"
                 } else if id == "S33" {
                     " (S33 also needs --mouse-diag)"
+                } else if id == "S41" && !options.overlay_latency {
+                    " (S41 also needs --overlay-latency)"
                 } else if options.skip_app
-                    && ["S10", "S11", "S12", "S15", "S21", "S23"].contains(&id.as_str())
+                    && [
+                        "S10", "S11", "S12", "S15", "S21", "S23", "S34", "S35", "S36", "S37",
+                        "S38", "S39", "S40", "S41",
+                    ]
+                    .contains(&id.as_str())
                 {
                     " (app checks are off with --skip-app)"
                 } else {
@@ -348,7 +369,7 @@ fn run(options: &Options) -> i32 {
 
     // S14 runs last and without the observer hook, which could mask the bug it looks for.
     if run_s14 {
-        print!("S14 Ctrl+Alt+K works while the app window has focus ... ");
+        print!("S14 Ctrl+Alt+K works while the overlay has focus ... ");
         let outcome = scenarios::focused_app_chord();
         println!(
             "{}",
@@ -361,7 +382,7 @@ fn run(options: &Options) -> i32 {
         report.add(
             "S14",
             "F3 (focus)",
-            "Ctrl+Alt+K works while the app window has focus",
+            "Ctrl+Alt+K works while the overlay has focus",
             outcome,
         );
     }

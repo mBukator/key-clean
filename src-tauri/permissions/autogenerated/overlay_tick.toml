@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-overlay-tick"
+description = "Enables the overlay_tick command without any pre-configured scope."
+commands.allow = ["overlay_tick"]
+
+[[permission]]
+identifier = "deny-overlay-tick"
+description = "Denies the overlay_tick command without any pre-configured scope."
+commands.deny = ["overlay_tick"]

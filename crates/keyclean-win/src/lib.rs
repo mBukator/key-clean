@@ -5,6 +5,7 @@
 
 pub mod client;
 mod close_guard;
+mod desktop;
 mod device_watch;
 mod devices;
 mod engine;
@@ -23,6 +24,7 @@ mod watchdog;
 
 pub use client::EngineClient;
 pub use close_guard::guard_helper_windows;
+pub use desktop::is_on_current_desktop;
 pub use device_watch::DeviceWatch;
 pub use devices::input_devices;
 pub use engine::{

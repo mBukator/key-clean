@@ -19,7 +19,7 @@ pub const DEVICES_EVENT: &str = "devices-changed";
 #[serde(rename_all = "camelCase")]
 pub struct ErrorDto {
     message_key: String,
-    details: String,
+    pub details: String,
 }
 
 impl ErrorDto {
@@ -28,6 +28,23 @@ impl ErrorDto {
         ErrorDto {
             message_key: "error.invalid_duration".to_owned(),
             details: format!("{seconds} s is not one of the lock duration presets"),
+        }
+    }
+
+    /// The overlay didn't confirm it was visible within the budget, so nothing was locked
+    /// (invariant 11).
+    pub fn overlay_timeout(details: String) -> Self {
+        ErrorDto {
+            message_key: "error.overlay_timeout".to_owned(),
+            details,
+        }
+    }
+
+    /// The overlay couldn't be opened or closed before it confirmed, so nothing was locked.
+    pub fn overlay_failed(details: String) -> Self {
+        ErrorDto {
+            message_key: "error.overlay_failed".to_owned(),
+            details,
         }
     }
 }
@@ -73,6 +90,10 @@ pub struct StatusDto {
     notice: Option<&'static str>,
     /// What the current session blocks, or the last one once it ends; `None` before any lock.
     targets: Option<TargetsDto>,
+    /// Set when the app ended the lock because the overlay went away, so the engine's
+    /// `UserRequest` end reads as `overlayLost`.
+    #[serde(skip)]
+    overlay_lost: bool,
 }
 
 impl StatusDto {
@@ -87,7 +108,23 @@ impl StatusDto {
             countdown_secs: None,
             notice: None,
             targets: None,
+            overlay_lost: false,
         }
+    }
+
+    /// Whether no lock is running or starting.
+    pub fn is_idle(&self) -> bool {
+        self.state == state_name(SessionState::Idle)
+    }
+
+    /// A new lock is being requested: an earlier lost-overlay mark no longer applies.
+    pub fn lock_requested(&mut self) {
+        self.overlay_lost = false;
+    }
+
+    /// Records that the app is ending the lock because the overlay went away (ADR 0014).
+    pub fn mark_overlay_lost(&mut self) {
+        self.overlay_lost = true;
     }
 
     /// Whether the current or last session left the keyboard free (the engine then only watches
@@ -139,7 +176,12 @@ impl StatusDto {
                 };
             }
             EngineEvent::SessionEnded { reason } => {
-                self.last_end_reason = Some(end_reason_name(*reason));
+                let overlay_lost = std::mem::take(&mut self.overlay_lost);
+                self.last_end_reason = Some(if overlay_lost && *reason == EndReason::UserRequest {
+                    OVERLAY_LOST
+                } else {
+                    end_reason_name(*reason)
+                });
             }
             EngineEvent::Error(e) => {
                 let mut dto = ErrorDto::from(e);
@@ -259,6 +301,10 @@ fn notice_key(notice: EngineNotice) -> Option<&'static str> {
         | EngineNotice::RawInputNotRemoved => None,
     }
 }
+
+/// The end reason the app reports when it ended the lock because the overlay went away. The
+/// engine only sees an unlock request.
+const OVERLAY_LOST: &str = "overlayLost";
 
 fn end_reason_name(reason: EndReason) -> &'static str {
     match reason {
@@ -400,6 +446,69 @@ mod tests {
     }
 
     #[test]
+    fn an_unlock_for_a_lost_overlay_reads_as_overlay_lost() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status(SessionState::Starting));
+        dto.apply(&status(SessionState::Locked));
+        assert!(!dto.is_idle());
+        dto.mark_overlay_lost();
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(json.get("overlayLost").is_none(), "internal only");
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::UserRequest,
+        });
+        dto.apply(&status(SessionState::Idle));
+        assert!(dto.is_idle());
+        assert_eq!(dto.last_end_reason, Some("overlayLost"));
+
+        // The flag is used once; the next user request reads as one.
+        dto.apply(&status(SessionState::Starting));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::UserRequest,
+        });
+        assert_eq!(dto.last_end_reason, Some("userRequest"));
+    }
+
+    #[test]
+    fn another_end_reason_wins_over_a_lost_overlay() {
+        let mut dto = StatusDto::initial(true);
+        dto.apply(&status(SessionState::Locked));
+        dto.mark_overlay_lost();
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::Timeout,
+        });
+        assert_eq!(dto.last_end_reason, Some("timeout"));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::UserRequest,
+        });
+        assert_eq!(dto.last_end_reason, Some("userRequest"), "flag cleared");
+    }
+
+    #[test]
+    fn a_new_lock_request_clears_a_stale_overlay_flag() {
+        let mut dto = StatusDto::initial(true);
+        dto.mark_overlay_lost();
+        dto.lock_requested();
+        dto.apply(&status(SessionState::Starting));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::UserRequest,
+        });
+        assert_eq!(dto.last_end_reason, Some("userRequest"));
+    }
+
+    #[test]
+    fn an_overlay_lost_before_the_first_status_still_reads_as_overlay_lost() {
+        let mut dto = StatusDto::initial(true);
+        dto.lock_requested();
+        dto.mark_overlay_lost();
+        dto.apply(&status(SessionState::Starting));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::UserRequest,
+        });
+        assert_eq!(dto.last_end_reason, Some("overlayLost"));
+    }
+
+    #[test]
     fn serializes_camel_case() {
         let mut dto = StatusDto::initial(true);
         dto.set_engine(true, None);
@@ -495,8 +604,9 @@ mod tests {
             EndReason::EngineError,
             EndReason::UserRequest,
         ];
-        for r in reasons {
-            let key = format!("endReason.{}", end_reason_name(r));
+        let names = reasons.map(end_reason_name);
+        for name in names.iter().chain([&OVERLAY_LOST]) {
+            let key = format!("endReason.{name}");
             assert!(strings.contains_key(&key), "missing {key}");
         }
     }
@@ -530,6 +640,8 @@ mod tests {
             "error.invalid_duration",
             "error.hook_install",
             "error.devices",
+            "error.overlay_timeout",
+            "error.overlay_failed",
         ] {
             assert!(strings.contains_key(key), "missing {key}");
         }
