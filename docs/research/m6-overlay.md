@@ -64,11 +64,16 @@ Measured from the lock request (in Rust, monotonic) to the page's confirmation. 
 Harness S34 reports one launch; opt-in S41 runs ten locks in one app run: the first (cold, while the
 main window's WebView2 is also starting) and the nine after it (warm).
 
-| Machine                      | Build                                  | Cold (first lock) | Warm p50 | Warm p95 | Max |
-| ---------------------------- | -------------------------------------- | ----------------- | -------- | -------- | --- |
-| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | not run yet       |          |          |     |
-| Windows 11 25H2, ASUS laptop | release (`bun tauri build`)            | not run yet       |          |          |     |
-| Windows 10                   | -                                      | no machine        |          |          |     |
+| Machine                      | Build                                  | Cold (first lock) | Warm p50 | Warm p95 | Max    |
+| ---------------------------- | -------------------------------------- | ----------------- | -------- | -------- | ------ |
+| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | 393 ms            | 260 ms   | 283 ms   | 283 ms |
+| Windows 11 25H2, ASUS laptop | release (`bun tauri build`), 3 locks   | 253 ms            | 250 ms   | -        | 253 ms |
+| Windows 10                   | -                                      | no machine        |          |          |        |
+
+[tested 2026-10-07] Every lock confirmed well inside the 2 s budget on Windows 11: the slowest was
+the first lock of harness S34 (769 ms, while the app itself was still starting), the cold S41 lock
+took 393 ms, and the release build 216-253 ms. So no pre-created window is needed, and ADR 0001's
+overlay criterion is met on Windows 11. Windows 10 is still open.
 
 Open: from M8 the dashboard is closed at idle, so the first lock will start WebView2 cold without a
 main window. If that misses the budget, a pre-created hidden overlay needs its own ADR.
@@ -78,8 +83,12 @@ main window. If that misses the budget, a pre-created hidden overlay needs its o
 From M5: two-finger scrolling, pinch, and three- and four-finger swipes never pass the hook. What
 they do to the overlay is M6 step 6:
 
-| Gesture                      | Expected under ADR 0014                    | Result      |
-| ---------------------------- | ------------------------------------------ | ----------- |
-| Three-finger swipe up        | Task View over the overlay; lock goes on   | not run yet |
-| Three-finger swipe down      | if it minimizes the overlay, the lock ends | not run yet |
-| Four-finger swipe left/right | with two desktops, the lock ends           | not run yet |
+| Gesture                      | Expected under ADR 0014                    | Result                                                                                                                                                             |
+| ---------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Three-finger swipe up        | Task View over the overlay; lock goes on   | as expected: Task View over the overlay, lock ran to the timer [tested]                                                                                            |
+| Three-finger swipe down      | if it minimizes the overlay, the lock ends | not minimized: the other monitor showed the desktop, the taskbar appeared over the overlay, the lock ran to the timer [tested]                                     |
+| Four-finger swipe left/right | with two desktops, the lock ends           | the other monitor showed the second desktop, but the overlay stayed on its monitor and the lock ran to the timer [tested; why Windows kept the overlay is unknown] |
+
+With two monitors, these gestures changed only the monitor without the overlay. The taskbar showing
+over the overlay after Show desktop is a known limitation: the taskbar is itself always on top. The
+lock still holds and the countdown stays visible above it.

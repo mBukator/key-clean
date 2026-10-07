@@ -60,7 +60,10 @@ thread:
 | Other desktop | `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop` is false (a four-finger touchpad swipe can switch desktops) [docs](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-ivirtualdesktopmanager) |
 | Silent        | the page answers every status with `overlay_tick`; 3 s without one (`HEARTBEAT_LIMIT`) means it crashed or hung                                                                                                                         |
 
-Any of these makes the app ask the engine to unlock. The last lock then reads "ended because its
+Any of these makes the app ask the engine to unlock. A close request on the overlay (Alt+F4 or
+`WM_CLOSE`) also exits KeyClean, like closing the main window (Max's decision, 2026-10-07, after
+harness S23 showed that `taskkill` without `/F` reached only the overlay, so the app kept running).
+Otherwise the last lock reads "ended because its
 lock screen was closed or hidden" (`overlayLost`). A webview can end a lock early this way, but it
 can never keep one going or delay an unlock, so invariant 3 holds: every engine exit works without
 the overlay. A getter that fails, or a desktop check Windows can't answer, doesn't count as a loss.

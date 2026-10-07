@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Full-screen overlay (M6): every lock shows a dark overlay on the monitor under the mouse pointer with the countdown, what is locked and Ctrl + Alt + K, and "Unlocking in N seconds" in the last seconds. Unlock now is on the overlay when the mouse isn't locked (ADR 0014).
 - Nothing is locked until the overlay is on screen: if it doesn't confirm within 2 s, the lock doesn't start and the window says why.
-- If the overlay is closed, hidden, minimized, left on another virtual desktop or stops responding during a lock, the lock ends and the window says the lock screen was closed or hidden.
+- If the overlay is hidden, minimized, left on another virtual desktop or stops responding during a lock, the lock ends and the window says the lock screen was closed or hidden. Closing the overlay (Alt+F4, or `taskkill` without `/F`) ends the lock and exits KeyClean.
 - When a lock ends, the overlay disappears at once and the main window comes back.
 - Harness checks S34-S40 (overlay before the lock, gone after the timer and Ctrl+Alt+K, missing confirmation, closed, hidden, minimized and silent overlay), opt-in S41 `--overlay-latency`, S14 with the overlay focused; the M6 manual test, research note and ADR 0014.
 

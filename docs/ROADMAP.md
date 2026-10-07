@@ -298,6 +298,16 @@ Status: **code-complete - awaiting manual verification**. Verification: `cargo r
 (S14, S34-S40), `--overlay-latency` (S41) and Part B of `docs/testing/manual/M6.md`. Design:
 `docs/design/overlay.png` (see `docs/design/README.md`).
 
+Harness, 2026-10-07: **35 passed, 1 failed** in 191 s. S23 failed: `taskkill` without `/F` reached
+only the overlay, so the lock ended (input back after 4 ms) but the app kept running. Fixed: a close
+request on the overlay now ends the lock and exits KeyClean (Max's decision); S23 and S37 need a
+re-run. S34 confirmed 769 ms after the request, S14 passed with the overlay focused. Latency (S41):
+cold 393 ms, warm p50 260 ms, p95 283 ms; release build 216-253 ms, so ADR 0001's criterion is met on
+Windows 11 without a pre-created window. Manual Part B: all steps passed. Touchpad gestures (Task
+View, Show desktop, four-finger swipe) never ended a lock: the overlay stayed on its monitor, and
+after Show desktop the taskbar showed over it. Optional steps 9 (second monitor) and 10 (release
+latency) passed; step 11 (Windows 10) was skipped.
+
 Max's decisions (plan approved 2026-10-06): the monitor under the cursor; any overlay loss ends the
 lock, a virtual desktop switch too; Unlock now hidden while the mouse is locked; the system monospace
 font; the main window comes back after unlock; a heartbeat catches a crashed or hung page.
