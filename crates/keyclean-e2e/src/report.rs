@@ -61,7 +61,7 @@ impl Report {
     }
 
     pub fn markdown(&self, elapsed: Duration) -> String {
-        let mut out = String::from("# KeyClean e2e results (M1-M5)\n\n");
+        let mut out = String::from("# KeyClean e2e results (M1-M6)\n\n");
         if let Some(ids) = &self.partial {
             out.push_str(&format!("Partial run: only {ids}.\n\n"));
         }
