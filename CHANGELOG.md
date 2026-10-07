@@ -46,8 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Precision touchpads are marked Limited: pointer movement, taps and clicks are locked, but two-finger scrolling, pinch, and three- and four-finger swipes still work, and the touchpad note says so.
 - Harness checks S26-S32 (mouse lock exits, mouse-only chord, dropped and failed mouse hook), S22 after a mouse lock, the opt-in `--mouse-diag` touchpad measurement, `lock_smoke --mouse`, the M5 manual test and research note.
 
+- Full-screen overlay (M6): every lock shows a dark overlay on the monitor under the mouse pointer with the countdown, what is locked and Ctrl + Alt + K, and "Unlocking in N seconds" in the last seconds. Unlock now is on the overlay when the mouse isn't locked (ADR 0014).
+- Nothing is locked until the overlay is on screen: if it doesn't confirm within 2 s, the lock doesn't start and the window says why.
+- If the overlay is closed, hidden, minimized, left on another virtual desktop or stops responding during a lock, the lock ends and the window says the lock screen was closed or hidden.
+- When a lock ends, the overlay disappears at once and the main window comes back.
+- Harness checks S34-S40 (overlay before the lock, gone after the timer and Ctrl+Alt+K, missing confirmation, closed, hidden, minimized and silent overlay), opt-in S41 `--overlay-latency`, S14 with the overlay focused; the M6 manual test, research note and ADR 0014.
+
 ### Changed
 
+- Locking now waits for the overlay, so `lock_input` returns once the lock has been requested or the overlay failed.
+- The harness and manual tests use a debug exe with the UI built in: `cargo build -p keyclean --features tauri/custom-protocol`.
 - The window's lock commands are now `lock_input` and `unlock_input`, with keyboard and mouse choices.
 - The `list_keyboards` command is now `list_devices` and returns every input device with its kind and capability.
 - The watchdog ends a hung engine with `TerminateProcess` instead of `abort()`, which went through Windows Error Reporting and kept the hook installed about 5 s longer.

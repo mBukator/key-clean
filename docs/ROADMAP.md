@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
-| M6 Full-screen overlay                         | §54 Phase 3 | not started                                 |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                       |
+| ---------------------------------------------- | ----------- | -------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                     |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                     |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                     |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                     |
+| M4 Device detection                            | §52 Phase 1 | **done**                                     |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                     |
+| M6 Full-screen overlay                         | §54 Phase 3 | code-complete - awaiting manual verification |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                  |
+| M8 System tray                                 | §55 Phase 4 | not started                                  |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                  |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                  |
+| M11 Packaging                                  | §55 Phase 4 | not started                                  |
+| M12 Open-source release                        | §56 Phase 5 | not started                                  |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                  |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                  |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable  |
 
 ---
 
@@ -294,8 +294,34 @@ Acceptance:
 
 ### M6 - Full-screen overlay
 
-Status: not started. Manual test: `docs/testing/manual/M6.md`. Design: `docs/design/overlay.png`
-(see `docs/design/README.md`).
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S14, S34-S40), `--overlay-latency` (S41) and Part B of `docs/testing/manual/M6.md`. Design:
+`docs/design/overlay.png` (see `docs/design/README.md`).
+
+Max's decisions (plan approved 2026-10-06): the monitor under the cursor; any overlay loss ends the
+lock, a virtual desktop switch too; Unlock now hidden while the mouse is locked; the system monospace
+font; the main window comes back after unlock; a heartbeat catches a crashed or hung page.
+
+Done in code (ADR 0014, research note `docs/research/m6-overlay.md`):
+
+- **Overlay first, then the lock.** The app builds the overlay hidden on the monitor under the
+  cursor, sizes it in physical pixels, shows it, and asks the engine to lock only after the page
+  confirms it is visible, within 2 s of the request. Otherwise nothing is locked and the window
+  says so. This reverses §12's order (ADR 0014). The engine and its protocol are unchanged.
+- **Watched during the lock.** On every countdown status the app checks the overlay: closed,
+  hidden, minimized, on another virtual desktop, or silent for 3 s ends the lock ("its lock screen
+  was closed or hidden"). Nothing runs at idle.
+- **Overlay page** (`overlay.html`, `src/ui/overlay/`): countdown with segmented progress, locked
+  devices from the engine's status, Ctrl + Alt + K key caps, "Unlocking in N seconds" in the last
+  5 s, DEV CAP, the current notice; Unlock now only when the mouse is free.
+- **End of the lock.** The overlay is destroyed at `Unlocking`, and on a refused request or a dead
+  engine; the main window comes back. Closing the main window still exits.
+- **Harness.** S14 now sends Ctrl+Alt+K with the overlay focused; S34-S40 check the order, the
+  timer end, a missing confirmation, and closing, hiding, minimizing or silencing the overlay;
+  opt-in S41 measures latency. The harness exe embeds the UI
+  (`cargo build -p keyclean --features tauri/custom-protocol`).
+
+Not verified: Windows 10 latency (no machine), a second monitor and mixed scaling, large monitors.
 
 Scope: overlay on **the monitor under the cursor first** (Max's decision; all monitors later). Order:
 show the overlay, wait for the webview's ack (after a double `requestAnimationFrame`), then engage the
