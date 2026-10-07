@@ -262,7 +262,7 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
             Scenario {
                 id: "S37",
                 steps: "M6",
-                name: "Closing the overlay mid-lock releases input",
+                name: "Closing the overlay mid-lock releases input and exits the app",
                 run: overlay_closed,
             },
             Scenario {
@@ -2650,8 +2650,9 @@ enum Disturb {
 }
 
 /// S37-S39: the overlay is closed, hidden or minimized mid-lock. Input must come back within
-/// `limit`, the app log must name the loss, the overlay window must be destroyed, and the app must
-/// keep running.
+/// `limit`, the app log must name the loss and the overlay window must be destroyed. A closed
+/// overlay exits the app, like closing the main window (ADR 0014); hidden or minimized, the app
+/// keeps running.
 fn overlay_disturbed(
     ctx: &mut Ctx<'_>,
     id: &'static str,
@@ -2701,19 +2702,39 @@ fn overlay_disturbed(
             ));
         }
         expect_overlay_gone(pid, hwnd, "input came back")?;
-        expect_app_running(app, &format!("its overlay was {done}"))?;
+        let app_after = match how {
+            Disturb::Close => {
+                if !wait_exit(app, Duration::from_secs(10)) {
+                    return Err(
+                        "input came back, but the app was still running 10 s after its overlay \
+                         was closed (closing the overlay must exit KeyClean)"
+                            .to_string(),
+                    );
+                }
+                let gone = expect_no_keyclean_left()?;
+                format!(
+                    "app exited; no keyclean.exe left {} ms later",
+                    gone.as_millis()
+                )
+            }
+            Disturb::Hide | Disturb::Minimize => {
+                expect_app_running(app, &format!("its overlay was {done}"))?;
+                "app still running".to_string()
+            }
+        };
         expect_probes_pass(observer)?;
         expect_no_stuck_keys()?;
         Ok(format!(
             "input back {} ms after the overlay was {done} (limit {} ms); app logged \"{needle}\"; \
-             overlay window destroyed; app still running",
+             overlay window destroyed; {app_after}",
             back.as_millis(),
             limit.as_millis()
         ))
     })
 }
 
-/// S37: SC_CLOSE to the overlay, as Alt+F4 or a close button would send.
+/// S37: SC_CLOSE to the overlay, as Alt+F4 or a close button would send: the lock ends and the app
+/// exits.
 fn overlay_closed(ctx: &mut Ctx<'_>) -> Outcome {
     overlay_disturbed(ctx, "S37", Disturb::Close, Duration::from_millis(1500))
 }

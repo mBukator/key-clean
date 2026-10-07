@@ -227,13 +227,17 @@ async fn show_and_wait(
         .map_err(|e| failed("building the overlay window failed", e))?;
     let built = requested.elapsed();
     let handle = app.clone();
-    window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
-        ) {
-            gone(&handle, id);
+    window.on_window_event(move |event| match event {
+        // Only an outside close raises this (Alt+F4, `WM_CLOSE` from `taskkill` without `/F`);
+        // the app's own `destroy()` doesn't. Like closing the main window, it ends the lock and
+        // exits KeyClean (Max's decision, 2026-10-07).
+        tauri::WindowEvent::CloseRequested { .. } => {
+            gone(&handle, id, true);
+            eprintln!("[keyclean] overlay: close requested; exiting");
+            handle.exit(0);
         }
+        tauri::WindowEvent::Destroyed => gone(&handle, id, false),
+        _ => {}
     });
 
     // Position first, then size: moving onto a monitor with another scale factor may resize
@@ -343,8 +347,9 @@ fn close_window(app: &AppHandle, label: &str) {
 }
 
 /// The overlay window of attempt `id` is closing. Before it confirmed, the waiting request gives
-/// up; during the lock, the lock ends.
-fn gone(app: &AppHandle, id: AttemptId) {
+/// up; during the lock, the lock ends. When `exiting`, the main window isn't brought back, since
+/// the app is about to exit.
+fn gone(app: &AppHandle, id: AttemptId, exiting: bool) {
     let state = app.state::<OverlayState>();
     let (waiter, watched) = {
         let mut inner = state.lock();
@@ -367,12 +372,12 @@ fn gone(app: &AppHandle, id: AttemptId) {
         let _ = tx.send(Wake::Gone);
     }
     if watched {
-        end_lock(app, id, OverlayLoss::Closed);
+        end_lock(app, id, OverlayLoss::Closed, !exiting);
     }
 }
 
 /// Ends the lock because the overlay of attempt `id` went away. Runs once per attempt.
-fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss) {
+fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) {
     let state = app.state::<OverlayState>();
     let window = {
         let mut inner = state.lock();
@@ -392,7 +397,9 @@ fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss) {
     if let Some(label) = window {
         close_window(app, &label);
     }
-    crate::focus_main_window(app);
+    if show_main {
+        crate::focus_main_window(app);
+    }
 }
 
 /// Called on every countdown status during a lock: checks on the main thread, where the window
@@ -437,7 +444,7 @@ fn check(app: &AppHandle) {
         }
     };
     if let Some(loss) = loss {
-        end_lock(app, id, loss);
+        end_lock(app, id, loss, true);
     }
 }
 
