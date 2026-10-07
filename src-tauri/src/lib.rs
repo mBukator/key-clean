@@ -146,20 +146,53 @@ fn start_engine(app: &AppHandle) {
 /// so the end-to-end harness can test the app without clicking (ADR 0008). Goes through the
 /// overlay like every lock (invariant 11). Clamped to the dev cap; release builds don't contain
 /// this.
+///
+/// `KEYCLEAN_E2E_AUTOLOCK_REPEAT=<n>` (1-20, default 1) locks `n` times in a row, each once the
+/// previous lock has ended and a second has passed, so the harness can measure the overlay with
+/// WebView2 already warm.
 #[cfg(debug_assertions)]
 fn e2e_autolock(app: &AppHandle) {
     let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
         .ok()
         .and_then(|v| v.parse::<u64>().ok());
-    if let Some(seconds) = seconds {
-        let duration = Duration::from_secs(seconds.clamp(1, 15));
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = overlay::lock(app, LockRequest::new(duration)).await {
+    let repeat = std::env::var("KEYCLEAN_E2E_AUTOLOCK_REPEAT")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map_or(1, |n| n.clamp(1, 20));
+    let Some(seconds) = seconds else {
+        return;
+    };
+    let duration = Duration::from_secs(seconds.clamp(1, 15));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for n in 0..repeat {
+            if n > 0 {
+                // Debug-only polling, between harness locks.
+                let idle = || {
+                    app.try_state::<StatusStore>()
+                        .is_some_and(|store| guard(&store.0).is_idle())
+                };
+                pause(Duration::from_secs(1)).await;
+                let waited = Instant::now();
+                while !idle() {
+                    if waited.elapsed() > Duration::from_secs(30) {
+                        eprintln!("[keyclean] e2e autolock stopped: the lock didn't end");
+                        return;
+                    }
+                    pause(Duration::from_millis(200)).await;
+                }
+                pause(Duration::from_secs(1)).await;
+            }
+            if let Err(e) = overlay::lock(app.clone(), LockRequest::new(duration)).await {
                 eprintln!("[keyclean] e2e autolock failed: {}", e.details);
             }
-        });
-    }
+        }
+    });
+}
+
+#[cfg(debug_assertions)]
+async fn pause(d: Duration) {
+    let _ = tauri::async_runtime::spawn_blocking(move || std::thread::sleep(d)).await;
 }
 
 /// Relays engine events to the main window. Ends when the engine stops; if the engine process
