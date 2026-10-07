@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                       |
-| ---------------------------------------------- | ----------- | -------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                     |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                     |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                     |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                     |
-| M4 Device detection                            | §52 Phase 1 | **done**                                     |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                     |
-| M6 Full-screen overlay                         | §54 Phase 3 | code-complete - awaiting manual verification |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                  |
-| M8 System tray                                 | §55 Phase 4 | not started                                  |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                  |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                  |
-| M11 Packaging                                  | §55 Phase 4 | not started                                  |
-| M12 Open-source release                        | §56 Phase 5 | not started                                  |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                  |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                  |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable  |
+| Milestone                                      | Phase       | Status                                      |
+| ---------------------------------------------- | ----------- | ------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
+| M4 Device detection                            | §52 Phase 1 | **done**                                    |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
+| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
+| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
+| M8 System tray                                 | §55 Phase 4 | not started                                 |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
+| M11 Packaging                                  | §55 Phase 4 | not started                                 |
+| M12 Open-source release                        | §56 Phase 5 | not started                                 |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
 
 ---
 
@@ -294,14 +294,14 @@ Acceptance:
 
 ### M6 - Full-screen overlay
 
-Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+Status: **done** (verified by Max, 2026-10-07). Verification: `cargo run -p keyclean-e2e`
 (S14, S34-S40), `--overlay-latency` (S41) and Part B of `docs/testing/manual/M6.md`. Design:
 `docs/design/overlay.png` (see `docs/design/README.md`).
 
 Harness, 2026-10-07: **35 passed, 1 failed** in 191 s. S23 failed: `taskkill` without `/F` reached
 only the overlay, so the lock ended (input back after 4 ms) but the app kept running. Fixed: a close
-request on the overlay now ends the lock and exits KeyClean (Max's decision); S23 and S37 need a
-re-run. S34 confirmed 769 ms after the request, S14 passed with the overlay focused. Latency (S41):
+request on the overlay now ends the lock and exits KeyClean (Max's decision). Re-run on the fix:
+S23 and S37 passed (app exited 263 ms after `taskkill`). S34 confirmed 769 ms after the request, S14 passed with the overlay focused. Latency (S41):
 cold 393 ms, warm p50 260 ms, p95 283 ms; release build 216-253 ms, so ADR 0001's criterion is met on
 Windows 11 without a pre-created window. Manual Part B: all steps passed. Touchpad gestures (Task
 View, Show desktop, four-finger swipe) never ended a lock: the overlay stayed on its monitor, and
@@ -342,12 +342,12 @@ meet the rule even with a pre-created hidden window, revisit ADR 0001.
 
 Acceptance (§60 "Overlay"):
 
-- [ ] Full-screen overlay appears
-- [ ] Countdown is visible
-- [ ] Locked devices are visible
-- [ ] Emergency shortcut is visible
-- [ ] Overlay disappears after unlock
-- [ ] Never locked without a confirmed-visible overlay
+- [x] Full-screen overlay appears
+- [x] Countdown is visible
+- [x] Locked devices are visible
+- [x] Emergency shortcut is visible
+- [x] Overlay disappears after unlock
+- [x] Never locked without a confirmed-visible overlay
 
 ### M7 - MVP dashboard
 
