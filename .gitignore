@@ -23,5 +23,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Third-party design references (not ours to redistribute)
+/docs/design/references/
+
 # Claude Code local settings
 .claude/settings.local.json
