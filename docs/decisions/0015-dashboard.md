@@ -1,6 +1,9 @@
 # ADR 0015 - MVP dashboard: custom duration, max-lock setting, remembered choices, display kept on
 
-- Status: Accepted, 2026-10-08
+- Status: Accepted, 2026-10-08. Pending Max's OK at the M7 manual test, because the plan didn't
+  settle them: the added `PowerRequestSystemRequired`, remembering choices once a lock is requested,
+  the touchpad row reading OFF while the mouse is off, the 420x520 minimum window, and no new
+  harness scenarios.
 - Deciders: Max (M7 plan settled 2026-10-07; hard-deadline wording option (b) chosen 2026-10-08)
 - Related: M7; §9-§12, §19, §25, §32, §45, §46; invariants 3, 6, 9, 11; ADR 0004, 0005 (amended),
   0006, 0013, 0014; `crates/keyclean-core/src/settings.rs`, `crates/keyclean-win/src/display.rs`,
