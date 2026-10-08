@@ -89,5 +89,6 @@
     "overlay.key.alt": "Alt",
     "overlay.key.k": "K",
     "overlay.key.plus": "+",
+    "power.reason": "KeyClean keeps the screen on during a cleaning session.",
     "overlay.mouseHint": "Touchpad gestures such as scrolling and swiping still work during the lock."
 }

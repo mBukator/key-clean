@@ -1,6 +1,9 @@
 //! Data sent to the webview. Mirrors `src/shared/types/engine.ts`. Contains no key data.
 
 use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
+use keyclean_win::keyclean_core::settings::{
+    DurationError, MAX_MAX_LOCK_MINUTES, MIN_DURATION, MIN_MAX_LOCK_MINUTES, Settings,
+};
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
     DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, LockTargets,
@@ -23,11 +26,14 @@ pub struct ErrorDto {
 }
 
 impl ErrorDto {
-    /// The app only locks for one of the presets (§11).
-    pub fn not_a_preset(seconds: u64) -> Self {
+    /// The requested lock duration is outside 10 s to the max-lock setting (ADR 0015).
+    pub fn invalid_duration(seconds: u64, max_lock_secs: u64, why: DurationError) -> Self {
         ErrorDto {
             message_key: "error.invalid_duration".to_owned(),
-            details: format!("{seconds} s is not one of the lock duration presets"),
+            details: format!(
+                "{seconds} s is {why} (allowed: {}-{max_lock_secs} s)",
+                MIN_DURATION.as_secs()
+            ),
         }
     }
 
@@ -94,6 +100,10 @@ pub struct StatusDto {
     /// `UserRequest` end reads as `overlayLost`.
     #[serde(skip)]
     overlay_lost: bool,
+    /// Set when the requested lock ends at its own hard deadline (its length equals the max-lock
+    /// setting), so the engine's `HardDeadline` end reads as `timeout` (ADR 0015).
+    #[serde(skip)]
+    session_meets_hard_deadline: bool,
 }
 
 impl StatusDto {
@@ -109,6 +119,7 @@ impl StatusDto {
             notice: None,
             targets: None,
             overlay_lost: false,
+            session_meets_hard_deadline: false,
         }
     }
 
@@ -118,8 +129,10 @@ impl StatusDto {
     }
 
     /// A new lock is being requested: an earlier lost-overlay mark no longer applies.
-    pub fn lock_requested(&mut self) {
+    /// `session_meets_hard_deadline` comes from the lock's plan (`LockPlan`).
+    pub fn lock_requested(&mut self, session_meets_hard_deadline: bool) {
         self.overlay_lost = false;
+        self.session_meets_hard_deadline = session_meets_hard_deadline;
     }
 
     /// Records that the app is ending the lock because the overlay went away (ADR 0014).
@@ -177,10 +190,12 @@ impl StatusDto {
             }
             EngineEvent::SessionEnded { reason } => {
                 let overlay_lost = std::mem::take(&mut self.overlay_lost);
-                self.last_end_reason = Some(if overlay_lost && *reason == EndReason::UserRequest {
-                    OVERLAY_LOST
-                } else {
-                    end_reason_name(*reason)
+                let full_length = std::mem::take(&mut self.session_meets_hard_deadline);
+                self.last_end_reason = Some(match reason {
+                    EndReason::UserRequest if overlay_lost => OVERLAY_LOST,
+                    // The lock ran its full length, which is also its hard deadline.
+                    EndReason::HardDeadline if full_length => end_reason_name(EndReason::Timeout),
+                    _ => end_reason_name(*reason),
                 });
             }
             EngineEvent::Error(e) => {
@@ -224,17 +239,35 @@ impl StatusDto {
 pub struct LockOptionsDto {
     preset_seconds: Vec<u64>,
     default_seconds: u64,
+    /// The shortest lock (the lower bound of the Custom field).
+    min_seconds: u64,
+    /// The longest lock: the max-lock setting.
+    max_seconds: u64,
+    max_lock_minutes: u64,
+    min_max_lock_minutes: u64,
+    max_max_lock_minutes: u64,
+    /// The duration to preselect: the last started lock's, within range.
+    last_seconds: u64,
+    /// The targets to preselect: the last started lock's.
+    last_targets: TargetsDto,
 }
 
 impl LockOptionsDto {
-    /// The presets and the default.
-    pub fn current() -> Self {
+    /// The presets, the range and the remembered choices under `settings`.
+    pub fn current(settings: &Settings) -> Self {
         LockOptionsDto {
             preset_seconds: presets::DURATION_PRESETS
                 .iter()
                 .map(|d| d.as_secs())
                 .collect(),
             default_seconds: presets::DEFAULT_DURATION.as_secs(),
+            min_seconds: MIN_DURATION.as_secs(),
+            max_seconds: settings.max_lock().as_secs(),
+            max_lock_minutes: settings.max_lock_minutes(),
+            min_max_lock_minutes: MIN_MAX_LOCK_MINUTES,
+            max_max_lock_minutes: MAX_MAX_LOCK_MINUTES,
+            last_seconds: settings.last_duration().as_secs(),
+            last_targets: TargetsDto::from(settings.last_targets()),
         }
     }
 }
@@ -488,7 +521,7 @@ mod tests {
     fn a_new_lock_request_clears_a_stale_overlay_flag() {
         let mut dto = StatusDto::initial(true);
         dto.mark_overlay_lost();
-        dto.lock_requested();
+        dto.lock_requested(false);
         dto.apply(&status(SessionState::Starting));
         dto.apply(&EngineEvent::SessionEnded {
             reason: EndReason::UserRequest,
@@ -499,7 +532,7 @@ mod tests {
     #[test]
     fn an_overlay_lost_before_the_first_status_still_reads_as_overlay_lost() {
         let mut dto = StatusDto::initial(true);
-        dto.lock_requested();
+        dto.lock_requested(false);
         dto.mark_overlay_lost();
         dto.apply(&status(SessionState::Starting));
         dto.apply(&EngineEvent::SessionEnded {
@@ -568,17 +601,84 @@ mod tests {
     }
 
     #[test]
-    fn lock_options_come_from_the_presets() {
-        let json = serde_json::to_value(LockOptionsDto::current()).unwrap();
+    fn lock_options_come_from_the_presets_and_settings() {
+        let json = serde_json::to_value(LockOptionsDto::current(&Settings::default())).unwrap();
         assert_eq!(json["presetSeconds"], serde_json::json!([30, 60, 120, 300]));
         assert_eq!(json["defaultSeconds"], 120);
+        assert_eq!(json["minSeconds"], 10);
+        assert_eq!(json["maxSeconds"], 1800);
+        assert_eq!(json["maxLockMinutes"], 30);
+        assert_eq!(json["minMaxLockMinutes"], 1);
+        assert_eq!(json["maxMaxLockMinutes"], 60);
+        assert_eq!(json["lastSeconds"], 120);
+        assert_eq!(
+            json["lastTargets"],
+            serde_json::json!({"keyboard": true, "mouse": false})
+        );
     }
 
     #[test]
-    fn non_preset_error_uses_the_invalid_duration_string() {
-        let json = serde_json::to_value(ErrorDto::not_a_preset(7)).unwrap();
+    fn lock_options_follow_a_lowered_max_lock() {
+        let mut settings = Settings::default();
+        settings.set_max_lock_minutes(1);
+        let json = serde_json::to_value(LockOptionsDto::current(&settings)).unwrap();
+        assert_eq!(json["maxSeconds"], 60);
+        assert_eq!(json["lastSeconds"], 60);
+    }
+
+    #[test]
+    fn invalid_duration_error_uses_the_invalid_duration_string() {
+        let json =
+            serde_json::to_value(ErrorDto::invalid_duration(7, 1800, DurationError::TooShort))
+                .unwrap();
         assert_eq!(json["messageKey"], "error.invalid_duration");
-        assert!(json["details"].as_str().unwrap().contains("7 s"));
+        let details = json["details"].as_str().unwrap();
+        assert!(details.contains("7 s"), "{details}");
+        assert!(details.contains("10-1800 s"), "{details}");
+    }
+
+    #[test]
+    fn a_full_length_lock_at_its_hard_deadline_reads_as_timeout() {
+        let mut dto = StatusDto::initial(false);
+        dto.lock_requested(true);
+        let json = serde_json::to_value(&dto).unwrap();
+        assert!(
+            json.get("sessionMeetsHardDeadline").is_none(),
+            "internal only"
+        );
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::HardDeadline,
+        });
+        assert_eq!(dto.last_end_reason, Some("timeout"));
+
+        // Used once: a later hard-deadline end reads as one.
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::HardDeadline,
+        });
+        assert_eq!(dto.last_end_reason, Some("hardDeadline"));
+    }
+
+    #[test]
+    fn a_shorter_lock_at_its_hard_deadline_keeps_the_reason() {
+        let mut dto = StatusDto::initial(false);
+        dto.lock_requested(false);
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::HardDeadline,
+        });
+        assert_eq!(dto.last_end_reason, Some("hardDeadline"));
+    }
+
+    #[test]
+    fn a_full_length_lock_keeps_other_end_reasons() {
+        let mut dto = StatusDto::initial(false);
+        dto.lock_requested(true);
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::Emergency,
+        });
+        assert_eq!(dto.last_end_reason, Some("emergency"));
     }
 
     #[test]

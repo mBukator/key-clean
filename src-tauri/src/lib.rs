@@ -13,6 +13,7 @@ mod devices;
 #[allow(dead_code)]
 mod i18n;
 mod overlay;
+mod settings;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -21,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use keyclean_win::SessionState;
 use keyclean_win::keyclean_core::policy::SafetyProfile;
-use keyclean_win::keyclean_core::presets;
 use keyclean_win::keyclean_core::restart::RestartBudget;
+use keyclean_win::keyclean_core::settings::check_duration;
 use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
@@ -32,6 +33,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
 use overlay::OverlayState;
+use settings::SettingsState;
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
 const RELAY_DRAIN: Duration = Duration::from_secs(1);
@@ -66,10 +68,12 @@ fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Locks the keyboard, the mouse, or both for `seconds`, which must be one of the presets. Shows
-/// the overlay first and locks only once it is confirmed visible (invariant 11). The engine still
-/// applies the safety policy (max lock, hard deadline, debug dev cap) and rejects a lock that
-/// blocks nothing. Async because building a window in a synchronous command deadlocks on Windows.
+/// Locks the keyboard, the mouse, or both for `seconds`, which must be within 10 s and the
+/// max-lock setting (ADR 0015). The max lock comes from the settings file, never from the window.
+/// Shows the overlay first and locks only once it is confirmed visible (invariant 11). The engine
+/// still applies the safety policy (max lock, hard deadline, debug dev cap) and rejects a lock that
+/// blocks nothing. Once the lock is requested, its duration and targets are remembered. Async
+/// because building a window in a synchronous command deadlocks on Windows.
 #[tauri::command]
 async fn lock_input(
     app: AppHandle,
@@ -77,12 +81,19 @@ async fn lock_input(
     keyboard: bool,
     mouse: bool,
 ) -> Result<(), ErrorDto> {
-    let duration = Duration::from_secs(seconds);
-    if !presets::is_preset(duration) {
-        return Err(ErrorDto::not_a_preset(seconds));
-    }
-    let request = LockRequest::new(duration).with_targets(LockTargets { keyboard, mouse });
-    overlay::lock(app, request).await
+    let max_lock = app.state::<SettingsState>().current().max_lock();
+    let duration = check_duration(Duration::from_secs(seconds), max_lock)
+        .map_err(|why| ErrorDto::invalid_duration(seconds, max_lock.as_secs(), why))?;
+    let targets = LockTargets { keyboard, mouse };
+    let request = LockRequest {
+        duration,
+        max_lock,
+        targets,
+    };
+    overlay::lock(app.clone(), request).await?;
+    app.state::<SettingsState>()
+        .remember_lock(duration, targets);
+    Ok(())
 }
 
 /// Asks the engine to end the current lock now (`UserRequest`).
@@ -95,8 +106,15 @@ fn unlock_input(engine: State<'_, EngineSlot>) -> Result<(), ErrorDto> {
 }
 
 #[tauri::command]
-fn get_lock_options() -> LockOptionsDto {
-    LockOptionsDto::current()
+fn get_lock_options(settings: State<'_, SettingsState>) -> LockOptionsDto {
+    LockOptionsDto::current(&settings.current())
+}
+
+/// Changes the maximum lock duration setting (clamped to 1-60 min) and returns the new options.
+/// A running lock keeps the limit it started with.
+#[tauri::command]
+fn set_max_lock(settings: State<'_, SettingsState>, minutes: u64) -> LockOptionsDto {
+    LockOptionsDto::current(&settings.set_max_lock_minutes(minutes))
 }
 
 #[tauri::command]
@@ -368,11 +386,14 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             focus_main_window(app);
         }))
+        // Used from Rust only: no window is granted its commands (src-tauri/capabilities/).
+        .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             // `setup` runs on the main thread, which owns the hidden helper windows.
             let handle = app.handle().clone();
             let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
             eprintln!("[keyclean] close guard: {guarded} helper windows");
+            app.manage(SettingsState::load(app.handle()));
             app.manage(OverlayState::new());
             start_engine(app.handle());
             devices::start(app.handle());
@@ -382,6 +403,7 @@ pub fn run() {
             lock_input,
             unlock_input,
             get_lock_options,
+            set_max_lock,
             get_status,
             list_devices,
             overlay::get_overlay_session,
@@ -480,7 +502,12 @@ mod tests {
                 .collect()
         };
         let overlay = permissions(include_str!("../capabilities/overlay.json"));
-        for denied in ["allow-lock-input", "allow-list-devices"] {
+        for denied in [
+            "allow-lock-input",
+            "allow-list-devices",
+            "allow-get-lock-options",
+            "allow-set-max-lock",
+        ] {
             assert!(!overlay.iter().any(|p| p == denied), "overlay has {denied}");
         }
         let main = permissions(include_str!("../capabilities/main.json"));
@@ -493,6 +520,24 @@ mod tests {
                 !main.iter().any(|p| p == denied),
                 "main window has {denied}"
             );
+        }
+    }
+
+    /// The settings file belongs to Rust: no window may call the store plugin (ADR 0015).
+    #[test]
+    fn no_window_can_use_the_store_plugin() {
+        for capability in [
+            include_str!("../capabilities/main.json"),
+            include_str!("../capabilities/overlay.json"),
+        ] {
+            let capability: serde_json::Value = serde_json::from_str(capability).unwrap();
+            for permission in capability["permissions"].as_array().unwrap() {
+                let name = permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+                    .unwrap_or_default();
+                assert!(!name.starts_with("store:"), "{name}");
+            }
         }
     }
 }
