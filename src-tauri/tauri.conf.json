@@ -14,8 +14,10 @@
             {
                 "label": "main",
                 "title": "KeyClean",
-                "width": 480,
+                "width": 760,
                 "height": 600,
+                "minWidth": 420,
+                "minHeight": 520,
                 "resizable": true
             }
         ],

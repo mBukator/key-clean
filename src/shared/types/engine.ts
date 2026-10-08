@@ -46,6 +46,18 @@ export interface LockOptions {
     presetSeconds: number[];
     /** The preset selected by default, in seconds. */
     defaultSeconds: number;
+    /** The shortest lock, in seconds (the lower bound of Custom). */
+    minSeconds: number;
+    /** The longest lock, in seconds: the max-lock setting. */
+    maxSeconds: number;
+    /** The max-lock setting, in minutes, and its allowed range. */
+    maxLockMinutes: number;
+    minMaxLockMinutes: number;
+    maxMaxLockMinutes: number;
+    /** The duration to preselect, in seconds: the last started lock's, within range. */
+    lastSeconds: number;
+    /** The targets to preselect: the last started lock's. */
+    lastTargets: LockTargets;
 }
 
 /** What the overlay shows before the engine's first status. Mirrors `OverlaySessionDto` in src-tauri/src/overlay.rs. */

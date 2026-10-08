@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 
 import { t, type StringKey } from "../../shared/localization/t";
-import { MONO_FONT } from "./font";
+import { MONO_FONT } from "../../shared/ui/font";
 
 const KEYS: StringKey[] = ["overlay.key.ctrl", "overlay.key.alt", "overlay.key.k"];
 
