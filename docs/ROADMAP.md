@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
-| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                       |
+| ---------------------------------------------- | ----------- | -------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                     |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                     |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                     |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                     |
+| M4 Device detection                            | §52 Phase 1 | **done**                                     |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                     |
+| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                     |
+| M7 MVP dashboard                               | §54 Phase 3 | code-complete - awaiting manual verification |
+| M8 System tray                                 | §55 Phase 4 | not started                                  |
+| M9 Global shortcut                             | §55 Phase 4 | not started                                  |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                  |
+| M11 Packaging                                  | §55 Phase 4 | not started                                  |
+| M12 Open-source release                        | §56 Phase 5 | not started                                  |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                  |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                  |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable  |
 
 ---
 
@@ -351,13 +351,29 @@ Acceptance (§60 "Overlay"):
 
 ### M7 - MVP dashboard
 
-Status: not started. Manual test: `docs/testing/manual/M7.md`. Design: `docs/design/clean-ready.png`
-(see `docs/design/README.md`).
+Status: code-complete - awaiting manual verification (2026-10-08). Manual test:
+`docs/testing/manual/M7.md`. Design: `docs/design/clean-ready.png` (see `docs/design/README.md`).
+Decisions: ADR 0015, ADR 0005 amendment. Research: `docs/research/m7-dashboard.md`.
 
-Scope: dashboard (§9), clean screen and device selection (§10, §25 reduced to keyboard/mouse on-off per
-ADR 0004), duration selector, Lock button, unlock state, plain-language errors with "View technical
-details" (§46), elevated-window warning (ADR 0005). Strings from `locales/en/strings.json`, layouts
-tolerate 2× text.
+Scope: dashboard (§9) with Clean, Devices and Settings tabs (Test hidden until M13); clean screen and
+device selection (§10, §25 reduced to keyboard/mouse on-off per ADR 0004, touchpad mirrors the mouse);
+presets plus Custom (10 s to the max lock); Settings → Safety → Maximum lock duration (1-60 min);
+remembered duration and targets; display kept on during a lock; Lock and unlock states;
+plain-language errors with "View technical details" (§46). Strings from `locales/en/strings.json`,
+layouts tolerate 2× text. The elevated-window warning moved to M9 (ADR 0005 amendment).
+
+Done in code:
+
+- [x] Core: duration range and settings model with defaults and clamping (unit-tested).
+- [x] App: settings file through `tauri-plugin-store` (Rust only), range check in `lock_input` with
+      the max lock sent to the engine, `set_max_lock`, extended lock options, display request.
+- [x] UI: dashboard, Devices tab, Settings → Safety, shared error block, light and dark themes.
+- [x] A lock as long as the max lock reads as complete (ADR 0015, option (b)).
+- [ ] Designed versions of Starting/Locked/Unlocking, Session finished, Custom, engine unavailable,
+      DEV CAP and Settings (plain styling until Max's designs arrive).
+
+No new harness scenarios: the autolock already runs non-preset lengths (S35), and reading power
+requests needs admin (research note, "Harness").
 
 Acceptance (§60 "Application"):
 
@@ -385,7 +401,8 @@ Acceptance:
 Status: not started. Manual test: `docs/testing/manual/M9.md`.
 
 Scope: configurable start shortcut (§28) via the official global-shortcut plugin; keys held from the
-shortcut leave nothing stuck (invariant 8).
+shortcut leave nothing stuck (invariant 8); the elevated-window warning before a shortcut lock, moved
+here from M7 (ADR 0005 amendment).
 
 Acceptance:
 

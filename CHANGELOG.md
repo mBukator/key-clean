@@ -51,10 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - If the overlay is hidden, minimized, left on another virtual desktop or stops responding during a lock, the lock ends and the window says the lock screen was closed or hidden. Closing the overlay (Alt+F4, or `taskkill` without `/F`) ends the lock and exits KeyClean.
 - When a lock ends, the overlay disappears at once and the main window comes back.
 - Harness checks S34-S40 (overlay before the lock, gone after the timer and Ctrl+Alt+K, missing confirmation, closed, hidden, minimized and silent overlay), opt-in S41 `--overlay-latency`, S14 with the overlay focused; the M6 manual test, research note and ADR 0014.
+- MVP dashboard (M7): Clean, Devices and Settings tabs. Clean shows the time, what gets locked and Ctrl + Alt + K, the presets plus Custom, Keyboard and Mouse tiles, a Touchpad tile that follows the mouse (shown when a touchpad is connected) and a Lock tile. Light and dark follow Windows (ADR 0015).
+- Custom lock durations from 10 seconds up to the maximum lock duration, with inline messages for invalid values.
+- Settings → Safety → Maximum lock duration (1-60 minutes, 30 by default). Presets longer than it are turned off.
+- KeyClean remembers the last requested lock's duration and targets in a small settings file that only Rust can write (`tauri-plugin-store`). Nothing about a running lock is stored.
+- The display stays on while the overlay is up. Sleeping the computer on purpose still ends the lock.
+- One shared error block for every error: a plain sentence plus "View technical details".
+- The M7 manual test, research note and ADR 0015; ADR 0005 amended.
 
 ### Changed
 
 - Locking now waits for the overlay, so `lock_input` returns once the lock has been requested or the overlay failed.
+- `lock_input` accepts any whole number of seconds from 10 up to the maximum lock duration instead of the presets only, and sends that maximum to the engine. `get_lock_options` also returns the range and the remembered choices; the new `set_max_lock` command changes the maximum.
+- A lock as long as the maximum lock duration now reads as complete instead of "the safety time limit was reached" (both deadlines fall at the same moment).
+- The elevated-window warning moves from M7 to M9 (global shortcut): from the dashboard, KeyClean is always in front when a lock starts.
 - The harness and manual tests use a debug exe with the UI built in: `cargo build -p keyclean --features tauri/custom-protocol`.
 - The window's lock commands are now `lock_input` and `unlock_input`, with keyboard and mouse choices.
 - The `list_keyboards` command is now `list_devices` and returns every input device with its kind and capability.
