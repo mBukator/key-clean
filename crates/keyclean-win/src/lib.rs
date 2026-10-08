@@ -8,6 +8,7 @@ mod close_guard;
 mod desktop;
 mod device_watch;
 mod devices;
+mod display;
 mod engine;
 mod error;
 mod foreground;
@@ -27,6 +28,7 @@ pub use close_guard::guard_helper_windows;
 pub use desktop::is_on_current_desktop;
 pub use device_watch::DeviceWatch;
 pub use devices::input_devices;
+pub use display::DisplayRequest;
 pub use engine::{
     DeviceChange, DeviceClass, Engine, EngineEvent, EngineNotice, EngineStatus, LockRequest,
     LockTargets, safety_profile,
