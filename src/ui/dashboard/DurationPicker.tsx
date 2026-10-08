@@ -148,7 +148,7 @@ export function DurationPicker({
                     <p
                         id={messageId}
                         aria-live="polite"
-                        className="text-sm font-medium break-words text-danger-fg empty:hidden"
+                        className="text-sm font-medium break-words text-danger-fg"
                     >
                         {!parsed.valid && (
                             <>
