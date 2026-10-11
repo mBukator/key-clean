@@ -6,6 +6,7 @@ fn main() {
             "lock_input",
             "unlock_input",
             "get_lock_options",
+            "set_max_lock",
             "get_status",
             "list_devices",
             "get_overlay_session",

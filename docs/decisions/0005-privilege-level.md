@@ -1,6 +1,6 @@
 # ADR 0005 - Privilege level: run as the invoking user (asInvoker)
 
-- Status: Accepted, 2026-10-01
+- Status: Accepted, 2026-10-01. Amended in M7 (2026-10-08): the warning moves to M9.
 - Deciders: Max
 - Related: `docs/research/phase-0-windows-input.md` (A4); fail-safe matrix "Elevated window focused";
   M1 step 11
@@ -40,3 +40,18 @@ to block that window, and it will tell you.
 - No UAC prompt, simple installer (NSIS `currentUser`).
 - M1 step 11 records the real behavior; the result decides how prominent the warning must be.
 - An optional elevated mode would need its own review against every invariant before it ships.
+
+## Amendment (M7, 2026-10-08): the warning moves to M9
+
+M7 was to warn before locking when an elevated window is in front. From the dashboard that can't
+happen: clicking Lock makes KeyClean the foreground window, and the overlay takes the focus when
+the lock starts. (Later in a lock, focus can still reach an elevated window on another monitor, or by
+Alt+Tab in a mouse-only lock; the in-lock notices below cover that.) An elevated window can only be in front when a lock starts without the dashboard, which
+is what the global shortcut (M9) adds. So the warning, and the optional "Relaunch as
+administrator", move to M9.
+
+M7 only shows the engine's existing in-lock notices (`notice.elevated_window`,
+`notice.elevated_window_chord` and `notice.elevated_window_mouse`) in the new dashboard. M3 step 7
+found that typing into an admin window was **blocked** once the engine ran in its own process
+(ADR 0009). The fail-open case above may therefore be rarer than first assumed; M9 measures it again
+before deciding how prominent the warning must be.

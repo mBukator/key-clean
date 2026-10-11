@@ -74,6 +74,15 @@ pub struct LockPlan {
     pub dev_cap: bool,
 }
 
+impl LockPlan {
+    /// Whether the session ends at the hard deadline itself. That happens when the session is as
+    /// long as the max-lock setting: both deadlines fall at the same instant and the engine reports
+    /// `HardDeadline`, although the lock simply ran its full length (ADR 0015).
+    pub fn session_meets_hard_deadline(&self) -> bool {
+        self.session >= self.hard_deadline
+    }
+}
+
 /// Which kinds of input a lock blocks. The hooks are global (ADR 0004), so this is "every keyboard"
 /// and "every mouse and touchpad", never a single device.
 ///
@@ -214,6 +223,21 @@ mod tests {
         let plan = release(secs(4000), DEFAULT_MAX_LOCK);
         assert_eq!(plan.session, DEFAULT_MAX_LOCK);
         assert_eq!(plan.hard_deadline, DEFAULT_MAX_LOCK);
+    }
+
+    #[test]
+    fn session_meets_hard_deadline_only_at_max_lock() {
+        assert!(release(DEFAULT_MAX_LOCK, DEFAULT_MAX_LOCK).session_meets_hard_deadline());
+        assert!(release(secs(60), secs(60)).session_meets_hard_deadline());
+        assert!(release(secs(4000), DEFAULT_MAX_LOCK).session_meets_hard_deadline());
+        assert!(!release(secs(1799), DEFAULT_MAX_LOCK).session_meets_hard_deadline());
+        assert!(!release(secs(120), DEFAULT_MAX_LOCK).session_meets_hard_deadline());
+        // With any max-lock setting the app allows (1 min or more), the dev cap keeps 5 s between
+        // them (15 s session, 20 s hard deadline).
+        assert!(!dev(secs(60), secs(60)).session_meets_hard_deadline());
+        // A max lock under 15 s (only reachable from a test client) makes them meet in dev too.
+        assert!(dev(secs(10), secs(10)).session_meets_hard_deadline());
+        assert!(!dev(secs(15), DEFAULT_MAX_LOCK).session_meets_hard_deadline());
     }
 
     #[test]

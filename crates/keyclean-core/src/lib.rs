@@ -15,4 +15,5 @@ pub mod policy;
 pub mod presets;
 pub mod restart;
 pub mod session;
+pub mod settings;
 pub mod time;

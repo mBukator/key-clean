@@ -1,5 +1,6 @@
 import { t, type StringKey } from "../../shared/localization/t";
 import type { Capability, Device, DeviceKind } from "../../shared/types/engine";
+import { MONO_FONT } from "../../shared/ui/font";
 
 type Group = "keyboard" | "mouse" | "touchpad" | "other";
 
@@ -16,10 +17,11 @@ const CAPABILITY_KEYS: Record<Capability, StringKey> = {
     unsupported: "devices.capability.unsupported",
 };
 
+/** The badge always names the capability; the border style is a second cue, never the only one. */
 const CAPABILITY_STYLES: Record<Capability, string> = {
-    supported: "bg-green-100 text-green-900",
-    limited: "bg-amber-100 text-amber-900",
-    unsupported: "bg-neutral-200 text-neutral-800",
+    supported: "border-line bg-surface text-fg",
+    limited: "border-fg/70 bg-transparent text-fg",
+    unsupported: "border-dashed border-line bg-transparent text-muted",
 };
 
 /** Why a device isn't fully supported. Supported devices have no note. */
@@ -37,18 +39,19 @@ function DeviceRow({ device }: { device: Device }) {
     const noteKey =
         device.capability === "supported" ? undefined : NOTE_KEYS[device.kind];
     return (
-        <li className="flex flex-col gap-1">
+        <li className="flex flex-col gap-1 border-b border-line py-2.5 last:border-b-0">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="break-words">{device.name ?? t("devices.unnamed")}</span>
+                <span className="min-w-0 break-words">
+                    {device.name ?? t("devices.unnamed")}
+                </span>
                 <span
-                    className={`rounded px-2 py-0.5 text-xs font-medium ${CAPABILITY_STYLES[device.capability]}`}
+                    style={MONO_FONT}
+                    className={`rounded border px-1.5 py-px text-xs ${CAPABILITY_STYLES[device.capability]}`}
                 >
                     {t(CAPABILITY_KEYS[device.capability])}
                 </span>
             </div>
-            {noteKey && (
-                <p className="text-xs break-words text-neutral-600">{t(noteKey)}</p>
-            )}
+            {noteKey && <p className="text-sm break-words text-muted">{t(noteKey)}</p>}
         </li>
     );
 }
@@ -56,10 +59,10 @@ function DeviceRow({ device }: { device: Device }) {
 /** The connected input devices, grouped by kind, with what KeyClean can do with each. */
 export function DeviceList({ devices }: { devices: Device[] }) {
     if (devices.length === 0) {
-        return <p className="text-sm text-neutral-600">{t("devices.none")}</p>;
+        return <p className="text-sm text-muted">{t("devices.none")}</p>;
     }
     return (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-5">
             {GROUPS.map(({ group, titleKey }) => {
                 const members = devices.filter((d) => groupOf(d.kind) === group);
                 if (members.length === 0) {
@@ -67,10 +70,13 @@ export function DeviceList({ devices }: { devices: Device[] }) {
                 }
                 return (
                     <section key={group} className="flex flex-col gap-1">
-                        <h3 className="text-sm font-semibold text-neutral-700">
+                        <h3
+                            style={MONO_FONT}
+                            className="text-xs tracking-[0.12em] text-muted uppercase"
+                        >
                             {t(titleKey)}
                         </h3>
-                        <ul className="flex flex-col gap-2">
+                        <ul className="flex flex-col rounded-lg border border-line bg-surface px-3.5">
                             {members.map((d) => (
                                 <DeviceRow key={d.id} device={d} />
                             ))}

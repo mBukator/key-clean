@@ -22,7 +22,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M4 Device detection                            | §52 Phase 1 | **done**                                    |
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
 | M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
-| M7 MVP dashboard                               | §54 Phase 3 | not started                                 |
+| M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
 | M8 System tray                                 | §55 Phase 4 | not started                                 |
 | M9 Global shortcut                             | §55 Phase 4 | not started                                 |
 | M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
@@ -351,19 +351,47 @@ Acceptance (§60 "Overlay"):
 
 ### M7 - MVP dashboard
 
-Status: not started. Manual test: `docs/testing/manual/M7.md`. Design: `docs/design/clean-ready.png`
-(see `docs/design/README.md`).
+Status: **done** (verified by Max, 2026-10-11). Verification: `cargo run -p keyclean-e2e` (S1-S40,
+regression only) and `docs/testing/manual/M7.md`. Design: `docs/design/clean-ready.png` (see
+`docs/design/README.md`). Decisions: ADR 0015, ADR 0005 amendment. Research:
+`docs/research/m7-dashboard.md`.
 
-Scope: dashboard (§9), clean screen and device selection (§10, §25 reduced to keyboard/mouse on-off per
-ADR 0004), duration selector, Lock button, unlock state, plain-language errors with "View technical
-details" (§46), elevated-window warning (ADR 0005). Strings from `locales/en/strings.json`, layouts
-tolerate 2× text.
+Harness, 2026-10-10: **36/36 passed** in 183 s. Manual, 2026-10-10 and 2026-10-11: steps 0-10, 12
+and 13 passed; optional steps 11 (corrupt settings file) and 14 (display on during a 2-minute lock)
+were skipped. Notes:
+
+- **Countdown in screen recordings:** while the laptop recorded the screen, the overlay countdown
+  skipped seconds; without recording it ticks every second. Record manual tests with a phone, or
+  expect this.
+- **Step 9:** a first try locked normally because an earlier KeyClean was still running, and the new
+  process (with the fault switch set) handed off to it. Expected single-instance behaviour; the
+  step now passes with no instance running.
+
+Scope: dashboard (§9) with Clean, Devices and Settings tabs (Test hidden until M13); clean screen and
+device selection (§10, §25 reduced to keyboard/mouse on-off per ADR 0004, touchpad mirrors the mouse);
+presets plus Custom (10 s to the max lock); Settings → Safety → Maximum lock duration (1-60 min);
+remembered duration and targets; display kept on during a lock; Lock and unlock states;
+plain-language errors with "View technical details" (§46). Strings from `locales/en/strings.json`,
+layouts tolerate 2× text. The elevated-window warning moved to M9 (ADR 0005 amendment).
+
+Done in code:
+
+- [x] Core: duration range and settings model with defaults and clamping (unit-tested).
+- [x] App: settings file through `tauri-plugin-store` (Rust only), range check in `lock_input` with
+      the max lock sent to the engine, `set_max_lock`, extended lock options, display request.
+- [x] UI: dashboard, Devices tab, Settings → Safety, shared error block, light and dark themes.
+- [x] A lock as long as the max lock reads as complete (ADR 0015, option (b)).
+- [ ] Designed versions of Starting/Locked/Unlocking, Session finished, Custom, engine unavailable,
+      DEV CAP and Settings (plain styling until Max's designs arrive).
+
+No new harness scenarios: the autolock already runs non-preset lengths (S35), and reading power
+requests needs admin (research note, "Harness").
 
 Acceptance (§60 "Application"):
 
-- [ ] Has a simple dashboard
-- [ ] Can start a cleaning session
-- [ ] Errors are plain language with technical details
+- [x] Has a simple dashboard
+- [x] Can start a cleaning session
+- [x] Errors are plain language with technical details
 
 ## Phase 4 - Windows integration (§55)
 
@@ -385,7 +413,8 @@ Acceptance:
 Status: not started. Manual test: `docs/testing/manual/M9.md`.
 
 Scope: configurable start shortcut (§28) via the official global-shortcut plugin; keys held from the
-shortcut leave nothing stuck (invariant 8).
+shortcut leave nothing stuck (invariant 8); the elevated-window warning before a shortcut lock, moved
+here from M7 (ADR 0005 amendment).
 
 Acceptance:
 

@@ -16,7 +16,7 @@ use keyclean_win::keyclean_core::overlay::{
 };
 use keyclean_win::keyclean_core::policy::{SafetyProfile, plan_lock};
 use keyclean_win::keyclean_core::time::MonoTime;
-use keyclean_win::{EngineError, LockRequest, safety_profile};
+use keyclean_win::{DisplayRequest, EngineError, LockRequest, safety_profile};
 use serde::Serialize;
 use tauri::window::Color;
 use tauri::{AppHandle, Manager, Monitor, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
@@ -65,6 +65,9 @@ struct Inner {
     watch: Option<(AttemptId, OverlayWatch)>,
     /// The attempt whose overlay window is open (pending or watched).
     window: Option<AttemptId>,
+    /// Keeps the display on from the overlay's confirmation until its window record is cleared
+    /// (ADR 0015). Dropping it releases the request.
+    display: Option<DisplayRequest>,
 }
 
 /// The overlay's state. At idle nothing is open and nothing runs.
@@ -82,6 +85,7 @@ impl OverlayState {
                 session: None,
                 watch: None,
                 window: None,
+                display: None,
             }),
             origin: Instant::now(),
         }
@@ -187,9 +191,13 @@ pub async fn lock(app: AppHandle, request: LockRequest) -> Result<(), ErrorDto> 
             ));
         }
         inner.watch = Some((id, OverlayWatch::new(state.now())));
+        // Not essential to the lock, so a refusal is only logged.
+        inner.display = DisplayRequest::acquire(&i18n::t("power.reason"))
+            .inspect_err(|e| eprintln!("[keyclean] display request refused: {e}"))
+            .ok();
         // Cleared here, not when the lock starts: the overlay may be lost before the engine's
         // first status arrives.
-        guard(&app.state::<StatusStore>().0).lock_requested();
+        guard(&app.state::<StatusStore>().0).lock_requested(plan.session_meets_hard_deadline());
         match guard(&app.state::<EngineSlot>().0).as_ref() {
             Some(engine) => engine.lock(request).map_err(|e| ErrorDto::from(&e)),
             None => Err(ErrorDto::from(&EngineError::NotRunning)),
@@ -332,6 +340,7 @@ fn take_window(inner: &mut Inner, id: AttemptId) -> Option<String> {
     if inner.window == Some(id) {
         inner.window = None;
         inner.session = None;
+        inner.display = None;
         Some(label(id))
     } else {
         None
@@ -379,13 +388,14 @@ fn gone(app: &AppHandle, id: AttemptId, exiting: bool) {
 /// Ends the lock because the overlay of attempt `id` went away. Runs once per attempt.
 fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) {
     let state = app.state::<OverlayState>();
-    let window = {
+    let (window, display) = {
         let mut inner = state.lock();
         if !inner.watch.is_some_and(|(w, _)| w == id) {
             return;
         }
         inner.watch = None;
-        take_window(&mut inner, id)
+        let display = inner.display.take();
+        (take_window(&mut inner, id), display)
     };
     eprintln!("[keyclean] overlay lost ({loss:?}); ending the lock");
     guard(&app.state::<StatusStore>().0).mark_overlay_lost();
@@ -394,6 +404,8 @@ fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) 
     {
         eprintln!("[keyclean] overlay: unlock request failed: {}", e.details());
     }
+    // Released after the unlock request, so it never delays it.
+    drop(display);
     if let Some(label) = window {
         close_window(app, &label);
     }

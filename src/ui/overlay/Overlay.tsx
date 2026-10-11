@@ -9,8 +9,9 @@ import {
     type LockTargets,
     type OverlaySession,
 } from "../../shared/types/engine";
+import { MONO_FONT } from "../../shared/ui/font";
+import { formatCountdown, targetsKey } from "../../shared/ui/format";
 import { EmergencyShortcut } from "./EmergencyShortcut";
-import { MONO_FONT } from "./font";
 import { SegmentedProgress } from "./SegmentedProgress";
 
 /** The countdown turns to the accent colour for this many final seconds. */
@@ -26,20 +27,6 @@ const plurals = new Intl.PluralRules("en");
 /** Invoke errors are ignored here: the app enforces every deadline itself. */
 function ignore(): void {
     // Nothing to do.
-}
-
-function devicesKey(targets: LockTargets): StringKey {
-    if (targets.mouse) {
-        return targets.keyboard ? "overlay.devices.all" : "overlay.devices.mouse";
-    }
-    return "overlay.devices.keyboard";
-}
-
-/** "01:42". */
-function formatCountdown(seconds: number): string {
-    const minutes = Math.floor(seconds / 60);
-    const rest = seconds % 60;
-    return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
 }
 
 /** The full-screen lock screen (invariant 11). It shows the lock; the engine owns it. */
@@ -171,7 +158,7 @@ export function Overlay() {
                 <div className="flex min-w-0 flex-col gap-1">
                     <h1 className="text-base font-bold break-words">{t("app.title")}</h1>
                     <p className="text-sm break-words text-[#a19d96]">
-                        {t("overlay.inputLocked", { devices: t(devicesKey(targets)) })}
+                        {t("overlay.inputLocked", { devices: t(targetsKey(targets)) })}
                     </p>
                     {targets.mouse && (
                         <p className="text-sm break-words text-[#a19d96]">

@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyclean-core = { path = "../crates/keyclean-core" }
 keyclean-win = { path = "../crates/keyclean-win" }
+tauri-plugin-store = "2"
 
 [lints]
 workspace = true

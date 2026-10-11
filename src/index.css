@@ -1,1 +1,79 @@
 @import "tailwindcss";
+
+/*
+ * Dashboard colour tokens. Light and dark follow Windows (prefers-color-scheme); there is no theme
+ * setting yet. Warm near-black and amber match the overlay (#0a0908, #f5a54a). The overlay page
+ * sets its own colours and doesn't use these.
+ */
+:root {
+    --kc-page: #f4f1ec;
+    --kc-surface: #fbfaf7;
+    --kc-surface-edge: #ded8cf;
+    --kc-line: #d9d3ca;
+    --kc-fg: #1a1714;
+    --kc-muted: #625c55;
+    --kc-accent: #f5a54a;
+    --kc-accent-edge: #c97c2c;
+    --kc-on-accent: #1f1407;
+    --kc-panel: #1b1916;
+    --kc-panel-line: #2f2b27;
+    --kc-panel-label: #b98a55;
+    --kc-panel-value: #f5a54a;
+    --kc-focus: #1a1714;
+    --kc-danger-bg: #fbe9e6;
+    --kc-danger-line: #e2a49b;
+    --kc-danger-fg: #7a1d12;
+    --kc-notice-bg: #fdf1e1;
+    --kc-notice-line: #e9c08d;
+    --kc-notice-fg: #5c3a0c;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --kc-page: #0a0908;
+        --kc-surface: #1f1c19;
+        --kc-surface-edge: #12100e;
+        --kc-line: #2f2b27;
+        --kc-fg: #f2efe9;
+        --kc-muted: #a19d96;
+        --kc-accent: #f5a54a;
+        --kc-accent-edge: #c97c2c;
+        --kc-on-accent: #1f1407;
+        --kc-panel: #0f0d0b;
+        --kc-panel-line: #2f2b27;
+        --kc-panel-label: #b98a55;
+        --kc-panel-value: #f5a54a;
+        --kc-focus: #f2efe9;
+        --kc-danger-bg: #3a1714;
+        --kc-danger-line: #7a2e25;
+        --kc-danger-fg: #ffd2cc;
+        --kc-notice-bg: #2c2012;
+        --kc-notice-line: #6b4a1f;
+        --kc-notice-fg: #f8dcb5;
+    }
+}
+
+@theme inline {
+    --color-page: var(--kc-page);
+    --color-surface: var(--kc-surface);
+    --color-surface-edge: var(--kc-surface-edge);
+    --color-line: var(--kc-line);
+    --color-fg: var(--kc-fg);
+    --color-muted: var(--kc-muted);
+    --color-accent: var(--kc-accent);
+    --color-accent-edge: var(--kc-accent-edge);
+    --color-on-accent: var(--kc-on-accent);
+    --color-panel: var(--kc-panel);
+    --color-panel-line: var(--kc-panel-line);
+    --color-panel-label: var(--kc-panel-label);
+    --color-panel-value: var(--kc-panel-value);
+    --color-focus: var(--kc-focus);
+    --color-danger-bg: var(--kc-danger-bg);
+    --color-danger-line: var(--kc-danger-line);
+    --color-danger-fg: var(--kc-danger-fg);
+    --color-notice-bg: var(--kc-notice-bg);
+    --color-notice-line: var(--kc-notice-line);
+    --color-notice-fg: var(--kc-notice-fg);
+    --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
