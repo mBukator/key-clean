@@ -20,17 +20,16 @@
 //! sends `WM_CLOSE` alone [assumption, tested 2026-10-02 and in M6 harness S23]. A `WM_CLOSE` with
 //! no `SC_CLOSE` just before it calls the exit callback.
 
-use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, TRUE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, TRUE, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, GetWindowThreadProcessId,
-    SC_CLOSE, WM_CLOSE, WM_NCDESTROY, WM_SYSCOMMAND,
+    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, SC_CLOSE, WM_CLOSE,
+    WM_NCDESTROY, WM_SYSCOMMAND,
 };
 use windows::core::BOOL;
 
@@ -68,36 +67,50 @@ pub fn guard_helper_windows(on_close: impl Fn() + Send + Sync + 'static) -> usiz
     guarded
 }
 
-/// Subclasses the dashboard window `hwnd` so a `WM_CLOSE` the user didn't start
-/// with the close button, Alt+F4 or the window menu calls the exit callback given to
-/// [`guard_helper_windows`] instead of closing the window. A user's close goes on as usual (to
-/// the tray). On failure, says why (for the log: thread ids and the Windows error, no input data).
+/// Subclasses this thread's webview windows (the dashboard) so a `WM_CLOSE` the user didn't
+/// start with the close button, Alt+F4 or the window menu calls the exit callback given to
+/// [`guard_helper_windows`] instead of closing the window. A user's close goes on as usual (the
+/// dashboard to the tray). Returns how many windows are guarded, counting ones guarded earlier.
 ///
-/// Call it on the thread that owns the window (the app's main thread), after
+/// The windows are found here rather than passed in: asking Tauri for the dashboard's handle from
+/// a task on the main thread reported it unavailable (M8 harness S44, 2026-10-12). An overlay
+/// open at the time is guarded too, which changes nothing: it exits on any close request
+/// (ADR 0014).
+///
+/// Call it on the app's main thread, which owns the webview windows, after
 /// [`guard_helper_windows`].
-pub fn guard_dashboard_close(hwnd: *mut c_void) -> Result<(), String> {
-    let hwnd = HWND(hwnd);
-    // SAFETY: reads which thread owns `hwnd`; a stale handle returns 0.
-    let owner = unsafe { GetWindowThreadProcessId(hwnd, None) };
-    // SAFETY: no preconditions.
-    let current = unsafe { GetCurrentThreadId() };
-    if owner != current {
-        return Err(format!(
-            "the window belongs to thread {owner}, not to the calling thread {current}"
-        ));
+pub fn guard_dashboard_close() -> usize {
+    let mut guarded = 0usize;
+    // SAFETY: the callback only runs during this call, and `guarded` outlives it; LPARAM carries a
+    // pointer to it.
+    let _ = unsafe {
+        EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(guard_webview_window),
+            LPARAM(&mut guarded as *mut usize as isize),
+        )
+    };
+    guarded
+}
+
+/// `EnumThreadWindows` callback for [`guard_dashboard_close`].
+///
+/// # Safety
+/// Called by Windows during [`guard_dashboard_close`], with `lparam` pointing to its counter.
+unsafe extern "system" fn guard_webview_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if is_own_webview(hwnd) {
+        // SAFETY: `hwnd` belongs to the calling thread (EnumThreadWindows), as SetWindowSubclass
+        // requires; `dashboard_subclass` lives for the whole program. Setting it again on a
+        // window that has it only replaces its (unused) data.
+        if unsafe { SetWindowSubclass(hwnd, Some(dashboard_subclass), DASHBOARD_SUBCLASS_ID, 0) }
+            .as_bool()
+        {
+            // SAFETY: `lparam` is the counter pointer passed by `guard_dashboard_close`, which
+            // is still running.
+            unsafe { *(lparam.0 as *mut usize) += 1 };
+        }
     }
-    USER_CLOSE.store(false, Ordering::SeqCst);
-    // SAFETY: `hwnd` belongs to the calling thread (checked above), as SetWindowSubclass
-    // requires; `dashboard_subclass` lives for the whole program.
-    let set =
-        unsafe { SetWindowSubclass(hwnd, Some(dashboard_subclass), DASHBOARD_SUBCLASS_ID, 0) };
-    if set.as_bool() {
-        Ok(())
-    } else {
-        // SAFETY: no preconditions; read right after the failed call.
-        let error = unsafe { GetLastError() };
-        Err(format!("SetWindowSubclass failed (error {})", error.0))
-    }
+    TRUE
 }
 
 /// The dashboard's subclass procedure.
@@ -159,19 +172,27 @@ unsafe extern "system" fn guard_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 /// Whether `hwnd`'s class was registered by this executable and isn't a webview window. That
 /// leaves out windows Windows itself gives the thread (e.g. the IME window).
 fn is_own_helper(hwnd: HWND) -> bool {
+    own_class_name(hwnd).is_some_and(|class| class != WEBVIEW_CLASS)
+}
+
+/// Whether `hwnd` is one of this executable's webview windows.
+fn is_own_webview(hwnd: HWND) -> bool {
+    own_class_name(hwnd).is_some_and(|class| class == WEBVIEW_CLASS)
+}
+
+/// The class name of `hwnd` if this executable registered its class.
+fn own_class_name(hwnd: HWND) -> Option<String> {
     // SAFETY: returns this executable's module handle without transferring ownership.
-    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
-        return false;
-    };
+    let module = unsafe { GetModuleHandleW(None) }.ok()?;
     // SAFETY: `hwnd` is a live window from EnumThreadWindows.
     if unsafe { GetClassLongPtrW(hwnd, GCLP_HMODULE) } != module.0 as usize {
-        return false;
+        return None;
     }
     let mut buffer = [0u16; 64];
     // SAFETY: `buffer` is writable for its full length.
     let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
     let len = usize::try_from(len).unwrap_or(0).min(buffer.len());
-    String::from_utf16_lossy(&buffer[..len]) != WEBVIEW_CLASS
+    Some(String::from_utf16_lossy(&buffer[..len]))
 }
 
 /// The subclass procedure.

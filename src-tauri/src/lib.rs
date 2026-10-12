@@ -28,7 +28,7 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
 };
-use tauri::{AppHandle, DeviceEventFilter, Emitter, Manager, RunEvent, State};
+use tauri::{AppHandle, DeviceEventFilter, Emitter, Manager, RunEvent, State, WindowEvent};
 
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
@@ -483,6 +483,12 @@ pub fn run() {
             // The last window closed (the dashboard, or the overlay with the dashboard closed).
             // With a tray icon KeyClean stays running there; Quit, the close guard and an
             // overlay close request exit with a code, which this doesn't prevent.
+            // The dashboard's close guard, again: idempotent, and this runs on the main thread.
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Focused(true),
+                ..
+            } if label == MAIN_WINDOW => dashboard::guard_close(),
             RunEvent::ExitRequested { code, api, .. } => {
                 if code.is_none() && keeps_running_in_tray(handle) {
                     api.prevent_exit();
