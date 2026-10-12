@@ -105,19 +105,21 @@ WebView2 has exited (S43 saw it go 735-803 ms after the dashboard closed). [test
 | ---------------------------- | -------------------------------------- | ------------ | ------ | -------- | -------- | ------- |
 | Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | M6 dashboard | 393 ms | 260 ms   | 283 ms   |         |
 | Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | no webview   | 862 ms | 826 ms   | 1540 ms  | 1540 ms |
-| Windows 11 25H2, ASUS laptop | release, tray locks (M8.md step 20)    | no webview   |        |          |          |         |
+| Windows 11 25H2, ASUS laptop | release, tray locks (M8.md step 20)    | no webview   | 667 ms | 574 ms   |          | 667 ms  |
 
 With no webview, every lock pays for WebView2's start: about three times the M6 warm numbers, and
 the worst debug lock left 460 ms of the 2 s budget. Harness S34, which locks while the app and its
-dashboard are still starting, confirmed after 1970 ms. The release measurement (step 20) decides
-whether a pre-created hidden overlay gets an ADR.
+dashboard are still starting, confirmed after 1970 ms. The release build confirmed tray locks in
+537-667 ms [tested 2026-10-12, M8.md step 20; "Cold" is the first of three, all with no webview],
+so no pre-created hidden overlay is needed and ADR 0001's criterion holds on Windows 11 with no
+webview open. Windows 10 is still unmeasured.
 
 ## Idle cost
 
 - No Raw Input registration in the app process: S42 logged 0. [tested 2026-10-12]
 - No WebView2 process after the dashboard closes: S43, gone 735-803 ms after the close.
   [tested 2026-10-12]
-- Both `keyclean.exe` at 0 % CPU with the dashboard closed (M8.md step 3). Memory: pending.
+- Both `keyclean.exe` at 0 % CPU with the dashboard closed (M8.md step 3). Memory wasn't recorded.
   [tested 2026-10-12]
 
 ## Open

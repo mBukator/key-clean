@@ -23,7 +23,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
 | M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
 | M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
-| M8 System tray                                 | §55 Phase 4 | in progress                                 |
+| M8 System tray                                 | §55 Phase 4 | **done**                                    |
 | M9 Global shortcut                             | §55 Phase 4 | not started                                 |
 | M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
 | M11 Packaging                                  | §55 Phase 4 | not started                                 |
@@ -397,8 +397,29 @@ Acceptance (§60 "Application"):
 
 ### M8 - System tray
 
-Status: in progress (plan approved by Max 2026-10-11). Manual test: `docs/testing/manual/M8.md`.
-Decisions: ADR 0016 (amends ADR 0012 and 0014). Research: `docs/research/m8-tray.md`.
+Status: **done** (verified by Max, 2026-10-12). Verification: `cargo run -p keyclean-e2e`
+(S1-S44), `--overlay-latency --no-dashboard` (S41) and `docs/testing/manual/M8.md`. Decisions:
+ADR 0016 (amends ADR 0012 and 0014). Research: `docs/research/m8-tray.md`.
+
+Harness, 2026-10-12: first run 36 passed, 3 failed in 251 s.
+
+- **S31** (cursor moved while every mouse probe was blocked; likely a program setting the cursor)
+  passed on its rerun.
+- **S12 and S44** found the dashboard's close guard unset. Tauri reported the window handle
+  unavailable, so the guard now enumerates the main thread's webview windows. It is set about a
+  second after the dashboard opens, and both checks wait for it (ADR 0016, known gap).
+- Reruns: S11, S12, S31, S43 and S44 passed.
+
+Overlay latency with no webview open (every tray lock starts WebView2 cold): debug S41 first
+862 ms, p95 1540 ms; release tray locks 537-667 ms (M8.md step 20). Within the 2 s rule, so no
+pre-created overlay is needed (ADR 0001, 0014).
+
+Manual, 2026-10-12: steps 1-15 and 20 passed (step 4 on a retry; 13 and 14 rerun with the
+dashboard guard active); optional steps 16-19 were skipped. Step 3 showed both `keyclean.exe` at
+0 % CPU with the dashboard closed; their memory wasn't recorded.
+
+Found in M8: since M0 the app process registered for Raw Input from every keyboard and mouse
+(tao's default). Fixed: S42 logs 0 registrations.
 
 Done in code:
 
@@ -422,9 +443,10 @@ exit code is `None`); closing the dashboard destroys its webview.
 
 Acceptance:
 
-- [ ] Runs in system tray (§60 "Application")
-- [ ] System tray works (§60 "Windows")
-- [ ] Idle cost near zero with the dashboard closed
+- [x] Runs in system tray (§60 "Application")
+- [x] System tray works (§60 "Windows")
+- [x] Idle cost near zero with the dashboard closed (0 % CPU, no webview, no Raw Input
+      registration; memory not recorded)
 
 ### M9 - Global shortcut
 
