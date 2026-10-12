@@ -23,7 +23,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
 | M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
 | M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
-| M8 System tray                                 | §55 Phase 4 | not started                                 |
+| M8 System tray                                 | §55 Phase 4 | in progress                                 |
 | M9 Global shortcut                             | §55 Phase 4 | not started                                 |
 | M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
 | M11 Packaging                                  | §55 Phase 4 | not started                                 |
@@ -397,7 +397,25 @@ Acceptance (§60 "Application"):
 
 ### M8 - System tray
 
-Status: not started. Manual test: `docs/testing/manual/M8.md`.
+Status: in progress (plan approved by Max 2026-10-11). Manual test: `docs/testing/manual/M8.md`.
+Decisions: ADR 0016 (amends ADR 0012 and 0014). Research: `docs/research/m8-tray.md`.
+
+Done in code:
+
+- [x] App process registers no Raw Input (tao's default registration removed; found in M8, invariant
+      4).
+- [x] Tray icon and menu (§27): idle and lock menus, countdown in the menu and tooltip during a lock
+      only, locks through the overlay gate, Settings opens its tab, Quit.
+- [x] Zero windows at idle: the dashboard is built on demand (`"create": false`), closing it
+      destroys its webview, `prevent_exit()` only with no exit code and a tray icon.
+- [x] After a lock: dashboard back only if it was open; an error or a lost overlay opens it.
+- [x] `taskkill` without `/F` still exits: the tray window is guarded, and a bare `WM_CLOSE` on the
+      dashboard exits.
+- [x] Tray icon art (outline per taskbar theme, amber when locked, 16-32 px), following theme and
+      scale changes without polling.
+- [ ] Harness: S11 and S12 rewritten, S42-S44, S41 `--no-dashboard`; app scenarios quit with
+      `taskkill`.
+- [ ] Tray menu and tooltip designs from Max (plain until then).
 
 Scope: tray icon and menu (§27); zero windows at idle (`app.windows: []`, `prevent_exit()` only when the
 exit code is `None`); closing the dashboard destroys its webview.

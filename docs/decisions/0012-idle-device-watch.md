@@ -1,6 +1,7 @@
 # ADR 0012 - Watch for devices in the app with `CM_Register_Notification`
 
-- Status: Accepted, 2026-10-04
+- Status: Accepted, 2026-10-04. Amended 2026-10-11 (M8, ADR 0016): until then the app process did
+  register for Raw Input, through tao's default device event filter; the app now removes it.
 - Deciders: Max (plan approved 2026-10-04)
 - Related: M4; ADR 0004 (per-device strategy), ADR 0009 (engine process), ADR 0010 (hook liveness),
   ADR 0011 (engine restart); `crates/keyclean-win/src/device_watch.rs`, `src-tauri/src/devices.rs`;

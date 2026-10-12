@@ -1,6 +1,8 @@
 # ADR 0014 - Full-screen overlay: shown first, watched during the lock
 
-- Status: Accepted, 2026-10-07
+- Status: Accepted, 2026-10-07. Amended by ADR 0016 (M8): the dashboard comes back after a lock
+  only if it was open when the lock was requested, or when the lock ended with an error or a lost
+  overlay; closing the dashboard no longer exits.
 - Deciders: Max (plan approved 2026-10-06: monitor under the cursor, any overlay loss ends the lock,
   a desktop switch ends it too, Unlock now hidden while the mouse is locked, system monospace font,
   main window back after unlock, heartbeat)
