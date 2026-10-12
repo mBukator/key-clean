@@ -119,7 +119,7 @@ webview open. Windows 10 is still unmeasured.
 - No Raw Input registration in the app process: S42 logged 0. [tested 2026-10-12]
 - No WebView2 process after the dashboard closes: S43, gone 735-803 ms after the close.
   [tested 2026-10-12]
-- Both `keyclean.exe` at 0 % CPU with the dashboard closed (M8.md step 3). Memory wasn't recorded.
+- Both `keyclean.exe` at 0 % CPU with the dashboard closed (M8.md step 3). The memory reading was skipped.
   [tested 2026-10-12]
 
 ## Open
