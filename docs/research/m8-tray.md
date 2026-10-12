@@ -20,8 +20,8 @@ sources (tauri 2.12.1, tauri-runtime-wry 2.12.1, tauri-utils 2.10.1, tauri-macro
   count logged in `setup` already reflects it. [docs: tauri 2.12.1 `app.rs`]
 - Registrations are per process (`GetRegisteredRawInputDevices` reports the caller's), which is why
   harness S22, run in the harness's own process, never saw the app's. [docs](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getregisteredrawinputdevices)
-- The app now logs `app raw input registrations: N`; harness S42 asserts 0. [assumption until S42
-  runs]
+- The app now logs `app raw input registrations: N`; harness S42 asserts 0. [tested
+  2026-10-12: S42 logged 0]
 
 ## Windows and exit
 
@@ -69,9 +69,18 @@ sources (tauri 2.12.1, tauri-runtime-wry 2.12.1, tauri-utils 2.10.1, tauri-macro
   must be masked. [docs](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-syscommand)
 - tao passes `SC_CLOSE` on to `DefWindowProc` and raises `CloseRequested` on `WM_CLOSE`.
   [docs: tao `event_loop.rs`]
-- Closing from the taskbar thumbnail or its context menu also sends `SC_CLOSE`. [assumption; M8.md]
-- Alt+F4 while the WebView2 content has focus reaches the window as `SC_CLOSE`. [assumption;
-  M8.md]
+- Closing from the taskbar thumbnail or its context menu also sends `SC_CLOSE`. [tested 2026-10-12:
+  M8.md step 13, KeyClean went to the tray with the dashboard guard active]
+- Alt+F4 while the WebView2 content has focus reaches the window as `SC_CLOSE`. [tested
+  2026-10-12: M8.md step 13]
+- Asking Tauri for the dashboard's handle (`WebviewWindow::hwnd`) from a main-thread task, right
+  after `from_config(...).build()`, failed with "the underlying handle is not available", and a
+  listener added with `on_window_event` never ran. Why isn't known; the overlay's identical calls
+  work. KeyClean finds its webview windows with `EnumThreadWindows` instead. [tested 2026-10-12:
+  harness S44 and S12 logs]
+- That task runs once WebView2 has started on the main thread, about a second after the window
+  first answers messages, so a bare `WM_CLOSE` in that first second leaves KeyClean in the tray.
+  [tested 2026-10-12: S44 and S12 before they waited for the guard]
 
 ## Taskbar theme
 
@@ -79,9 +88,9 @@ sources (tauri 2.12.1, tauri-runtime-wry 2.12.1, tauri-utils 2.10.1, tauri-macro
   [docs](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/ui/apply-windows-themes)
 - The taskbar follows the "Choose your Windows mode" setting, stored as `SystemUsesLightTheme`
   (DWORD, 1 = light) under `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`.
-  [assumption: undocumented, widely used; M8.md step]
+  [undocumented; tested 2026-10-12: M8.md step 15]
 - A colour mode change broadcasts `WM_SETTINGCHANGE` to top-level windows, hidden ones included.
-  [assumption: widely observed; M8.md step] KeyClean re-reads the value on every
+  [tested 2026-10-12: M8.md step 15, the icon switched with no restart] KeyClean re-reads the value on every
   `WM_SETTINGCHANGE` rather than matching its `lParam` string.
 - `RegNotifyChangeKeyValue` is the documented fallback: one notification per call, re-armed after
   each, on a persistent thread. Not used. [docs](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regnotifychangekeyvalue)
@@ -89,17 +98,27 @@ sources (tauri 2.12.1, tauri-runtime-wry 2.12.1, tauri-utils 2.10.1, tauri-macro
 ## Latency with no webview open
 
 From M8 the dashboard is closed at idle, so a tray lock starts WebView2 cold with no other webview
-alive. Harness S41 with `--no-dashboard` measures it. [pending Max's run]
+alive. Harness S41 with `--no-dashboard` measures it, with a 16 s pause after each lock so
+WebView2 has exited (S43 saw it go 735-803 ms after the dashboard closed). [tested 2026-10-12]
 
-| Machine                      | Build                                  | Mode         | Cold   | Warm p50 | Warm p95 | Max |
-| ---------------------------- | -------------------------------------- | ------------ | ------ | -------- | -------- | --- |
-| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | M6 dashboard | 393 ms | 260 ms   | 283 ms   |     |
-| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | no webview   |        |          |          |     |
+| Machine                      | Build                                  | Mode         | Cold   | Warm p50 | Warm p95 | Max     |
+| ---------------------------- | -------------------------------------- | ------------ | ------ | -------- | -------- | ------- |
+| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | M6 dashboard | 393 ms | 260 ms   | 283 ms   |         |
+| Windows 11 25H2, ASUS laptop | debug, `custom-protocol` (harness S41) | no webview   | 862 ms | 826 ms   | 1540 ms  | 1540 ms |
+| Windows 11 25H2, ASUS laptop | release, tray locks (M8.md step 20)    | no webview   |        |          |          |         |
+
+With no webview, every lock pays for WebView2's start: about three times the M6 warm numbers, and
+the worst debug lock left 460 ms of the 2 s budget. Harness S34, which locks while the app and its
+dashboard are still starting, confirmed after 1970 ms. The release measurement (step 20) decides
+whether a pre-created hidden overlay gets an ADR.
 
 ## Idle cost
 
-[pending Max's run: M8.md step 3 (Task Manager), harness S42 (no Raw Input registration) and
-S43 (no WebView2 process after the dashboard closes)]
+- No Raw Input registration in the app process: S42 logged 0. [tested 2026-10-12]
+- No WebView2 process after the dashboard closes: S43, gone 735-803 ms after the close.
+  [tested 2026-10-12]
+- Both `keyclean.exe` at 0 % CPU with the dashboard closed (M8.md step 3). Memory: pending.
+  [tested 2026-10-12]
 
 ## Open
 

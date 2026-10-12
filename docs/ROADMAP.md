@@ -413,7 +413,7 @@ Done in code:
       dashboard exits.
 - [x] Tray icon from Max's keycap drawing (per taskbar theme, amber when locked, 16-32 px), following theme and
       scale changes without polling.
-- [ ] Harness: S11 and S12 rewritten, S42-S44, S41 `--no-dashboard`; app scenarios quit with
+- [x] Harness: S11 and S12 rewritten, S42-S44, S41 `--no-dashboard`; app scenarios quit with
       `taskkill`.
 - [ ] Tray menu and tooltip designs from Max (plain until then).
 
