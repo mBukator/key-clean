@@ -1,10 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
-  <!-- KeyClean tray icon, idle, for a dark taskbar: a flat keycap with a K, drawn on the 16 px grid. -->
-  <rect x="1.5" y="1.5" width="13" height="13" rx="3" fill="none" stroke="#ffffff" stroke-width="1"/>
-  <g fill="none" stroke="#ffffff" stroke-width="1.5">
-    <path d="M5.75 3.75V10.5"/>
-    <path d="M10.6 3.75L6.25 7.6"/>
-    <path d="M7.45 6.6L10.75 10.5"/>
-  </g>
-  <rect x="4" y="12" width="8" height="1" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="354 384 544 544">
+  <!-- KeyClean tray icon, idle, for a dark taskbar: Max's keycap (front view, top face, LED dot), traced as a vector. -->
+  <path d="M520 420H745Q815 420 828 490L888 790Q900 893 810 893H440Q350 893 364 790L424 490Q437 420 520 420Z M510 457H752Q784 457 789 492L814 680Q822 747 755 747H502Q434 747 441 680L466 492Q471 457 510 457Z" fill="#ffffff" fill-rule="evenodd"/>
+  <circle cx="520" cy="513" r="24" fill="#ffffff"/>
 </svg>

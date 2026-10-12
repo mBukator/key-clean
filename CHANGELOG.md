@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The M7 manual test, research note and ADR 0015; ADR 0005 amended.
 
 - System tray (M8): KeyClean runs from a tray icon. Its menu locks the keyboard or the selected devices with the remembered duration, opens the dashboard or its Settings tab, and quits; during a lock it shows the countdown, Unlock and Show overlay. Left-click opens the dashboard (ADR 0016).
-- The tray icon is a keycap with a K: an outline that follows the taskbar's light or dark theme at idle, filled amber while locked, sharp at 100-200 % scaling.
+- The tray icon is a keycap with an LED dot: a cut-out shape that follows the taskbar's light or dark theme at idle, amber while locked, sharp at 100-200 % scaling.
 - A failed lock started from the tray shows in the tray, and the dashboard shows the error when opened; a lock that ends with an error or a lost lock screen opens the dashboard.
 - Harness checks S42-S44 (KeyClean stays in the tray with no window and quits cleanly, no WebView2 left after the dashboard closes, `taskkill` with the dashboard open), S41 `--no-dashboard`, the M8 manual test, research note and ADR 0016.
 

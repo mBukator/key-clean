@@ -411,7 +411,7 @@ Done in code:
 - [x] After a lock: dashboard back only if it was open; an error or a lost overlay opens it.
 - [x] `taskkill` without `/F` still exits: the tray window is guarded, and a bare `WM_CLOSE` on the
       dashboard exits.
-- [x] Tray icon art (outline per taskbar theme, amber when locked, 16-32 px), following theme and
+- [x] Tray icon from Max's keycap drawing (per taskbar theme, amber when locked, 16-32 px), following theme and
       scale changes without polling.
 - [ ] Harness: S11 and S12 rewritten, S42-S44, S41 `--no-dashboard`; app scenarios quit with
       `taskkill`.

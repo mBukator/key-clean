@@ -1,8 +1,9 @@
 //! The tray icon and its menu (§27, ADR 0016): the way back to KeyClean while no window is open.
 //!
-//! The icon is a keycap with a K: an outline in the taskbar's colour at idle, filled amber while
-//! locked (`assets/tray/`, rasterized by `scripts/tray-icons.mjs`). It follows the taskbar's light
-//! or dark theme and the display scaling, re-read only when Windows reports a setting change.
+//! The icon is Max's keycap (front view, top face cut out, an LED dot): in the taskbar's colour at
+//! idle, amber while locked (`assets/tray/`, rasterized by `scripts/tray-icons.mjs`). It follows
+//! the taskbar's light or dark theme and the display scaling, re-read only when Windows reports a
+//! setting change.
 //!
 //! The menu follows the engine status. It is rebuilt only when the status moves between idle and
 //! locked (or the engine becomes available or not); during a lock the status line and the tooltip
@@ -100,7 +101,7 @@ enum Variant {
     IdleLight,
     /// White outline, for a dark taskbar.
     IdleDark,
-    /// Filled amber, readable on either taskbar.
+    /// Amber, for either taskbar.
     Locked,
 }
 
