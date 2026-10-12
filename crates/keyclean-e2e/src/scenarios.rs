@@ -1230,6 +1230,7 @@ fn second_instance(_ctx: &mut Ctx<'_>) -> Outcome {
             );
         }
         let shown = exited_at.elapsed();
+        wait_dashboard_guarded("S12-first")?;
         let quit = quit_app(&mut first.0, Duration::from_secs(10))?;
         expect_no_keyclean_left()?;
         Ok(format!(
@@ -2420,6 +2421,26 @@ fn wait_log(id: &str, needle: &str, timeout: Duration) -> (bool, String) {
     (found, log)
 }
 
+/// What the app logs once it has set the dashboard's close guard, followed by the window count.
+const DASHBOARD_GUARD: &str = "dashboard: close guard on ";
+
+/// Waits until the app has set the close guard on its new dashboard, so a `taskkill` after it
+/// tests the guard. It is set on the main thread once WebView2 has started, about a second after
+/// the window answers messages; a bare `WM_CLOSE` before that leaves KeyClean in the tray (known
+/// gap, ADR 0016). Returns how many windows were guarded.
+fn wait_dashboard_guarded(id: &str) -> Result<u64, String> {
+    let (logged, log) = wait_log(id, DASHBOARD_GUARD, Duration::from_secs(15));
+    match ms_after(&log, DASHBOARD_GUARD) {
+        Some(n) if logged && n >= 1 => Ok(n),
+        Some(n) => Err(format!(
+            "the app set the dashboard's close guard on {n} windows; log: e2e-{id}-app.log"
+        )),
+        None => Err(format!(
+            "the app didn't log its dashboard close guard within 15 s; log: e2e-{id}-app.log"
+        )),
+    }
+}
+
 /// The number right after `key` in `text`, e.g. the 412 of "confirmed visible 412 ms".
 fn ms_after(text: &str, key: &str) -> Option<u64> {
     let rest = &text[text.find(key)? + key.len()..];
@@ -3219,11 +3240,12 @@ fn taskkill_idle_dashboard(_ctx: &mut Ctx<'_>) -> Outcome {
             .ok_or("the dashboard didn't appear within 20 s; log: e2e-S44-app.log")?;
         let responsive = wait_responsive(pid, Duration::from_secs(10))
             .ok_or("the dashboard didn't respond within 10 s")?;
+        let guarded = wait_dashboard_guarded("S44")?;
         let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
         let left = expect_no_keyclean_left()?;
         Ok(format!(
-            "dashboard responding after {} ms; taskkill /PID (without /F) exit after {} ms, no \
-             keyclean.exe left {} ms later",
+            "dashboard responding after {} ms, close guard on {guarded} window(s); taskkill /PID \
+             (without /F) exit after {} ms, no keyclean.exe left {} ms later",
             responsive.as_millis(),
             exited.as_millis(),
             left.as_millis()
