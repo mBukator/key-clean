@@ -480,15 +480,15 @@ pub fn run() {
 
     match app {
         Ok(app) => app.run(|handle, event| match event {
-            // The last window closed (the dashboard, or the overlay with the dashboard closed).
-            // With a tray icon KeyClean stays running there; Quit, the close guard and an
-            // overlay close request exit with a code, which this doesn't prevent.
             // The dashboard's close guard, again: idempotent, and this runs on the main thread.
             RunEvent::WindowEvent {
                 label,
                 event: WindowEvent::Focused(true),
                 ..
             } if label == MAIN_WINDOW => dashboard::guard_close(),
+            // The last window closed (the dashboard, or the overlay with the dashboard closed).
+            // With a tray icon KeyClean stays running there; Quit, the close guard and an
+            // overlay close request exit with a code, which this doesn't prevent.
             RunEvent::ExitRequested { code, api, .. } => {
                 if code.is_none() && keeps_running_in_tray(handle) {
                     api.prevent_exit();

@@ -107,18 +107,27 @@ fn build(app: &AppHandle, tab: Option<Tab>) -> tauri::Result<()> {
     // Closing the dashboard sends KeyClean to the tray, but `taskkill` must still exit it. Set on
     // the main thread, which owns the window, once it is built; `guard_close` runs again each
     // time it gains focus, in case this one came too early.
+    GUARD_LOGGED.store(false, Ordering::SeqCst);
     app.run_on_main_thread(|| {
         let guarded = keyclean_win::guard_dashboard_close();
+        if guarded > 0 {
+            GUARD_LOGGED.store(true, Ordering::SeqCst);
+        }
         eprintln!("[keyclean] dashboard: close guard on {guarded} window(s)");
     })?;
     let _ = window.set_focus();
     Ok(())
 }
 
+/// Whether this dashboard's close guard has been logged as set, so a later success on focus is
+/// logged once (the harness waits for that line) and focus changes don't fill the log.
+static GUARD_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// Sets the dashboard's close guard again; it is idempotent. Main thread only (the app's
-/// `RunEvent` handler, when the dashboard gains focus). Logs only a failure.
+/// `RunEvent` handler, when the dashboard gains focus).
 pub fn guard_close() {
-    if keyclean_win::guard_dashboard_close() == 0 {
-        eprintln!("[keyclean] dashboard: close guard found no window on focus");
+    let guarded = keyclean_win::guard_dashboard_close();
+    if guarded > 0 && !GUARD_LOGGED.swap(true, Ordering::SeqCst) {
+        eprintln!("[keyclean] dashboard: close guard on {guarded} window(s) on focus");
     }
 }

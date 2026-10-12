@@ -28,8 +28,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, SC_CLOSE, WM_CLOSE,
-    WM_NCDESTROY, WM_SYSCOMMAND,
+    EnumThreadWindows, GCLP_HMODULE, GWL_EXSTYLE, GetClassLongPtrW, GetClassNameW,
+    GetWindowLongPtrW, SC_CLOSE, WM_CLOSE, WM_NCDESTROY, WM_SYSCOMMAND, WS_EX_TOPMOST,
 };
 use windows::core::BOOL;
 
@@ -73,9 +73,9 @@ pub fn guard_helper_windows(on_close: impl Fn() + Send + Sync + 'static) -> usiz
 /// dashboard to the tray). Returns how many windows are guarded, counting ones guarded earlier.
 ///
 /// The windows are found here rather than passed in: asking Tauri for the dashboard's handle from
-/// a task on the main thread reported it unavailable (M8 harness S44, 2026-10-12). An overlay
-/// open at the time is guarded too, which changes nothing: it exits on any close request
-/// (ADR 0014).
+/// a task on the main thread reported it unavailable (M8 harness S44, 2026-10-12). Always-on-top
+/// webview windows (the overlay) are left alone, so a close request there keeps going through the
+/// overlay's own handling (ADR 0014).
 ///
 /// Call it on the app's main thread, which owns the webview windows, after
 /// [`guard_helper_windows`].
@@ -98,7 +98,7 @@ pub fn guard_dashboard_close() -> usize {
 /// # Safety
 /// Called by Windows during [`guard_dashboard_close`], with `lparam` pointing to its counter.
 unsafe extern "system" fn guard_webview_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    if is_own_webview(hwnd) {
+    if is_own_webview(hwnd) && !is_topmost(hwnd) {
         // SAFETY: `hwnd` belongs to the calling thread (EnumThreadWindows), as SetWindowSubclass
         // requires; `dashboard_subclass` lives for the whole program. Setting it again on a
         // window that has it only replaces its (unused) data.
@@ -178,6 +178,13 @@ fn is_own_helper(hwnd: HWND) -> bool {
 /// Whether `hwnd` is one of this executable's webview windows.
 fn is_own_webview(hwnd: HWND) -> bool {
     own_class_name(hwnd).is_some_and(|class| class == WEBVIEW_CLASS)
+}
+
+/// Whether `hwnd` is always on top (the overlay is; the dashboard isn't).
+fn is_topmost(hwnd: HWND) -> bool {
+    // SAFETY: reading a live window's extended style has no preconditions.
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    (ex_style as u32) & WS_EX_TOPMOST.0 != 0
 }
 
 /// The class name of `hwnd` if this executable registered its class.

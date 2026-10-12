@@ -2427,18 +2427,30 @@ const DASHBOARD_GUARD: &str = "dashboard: close guard on ";
 /// Waits until the app has set the close guard on its new dashboard, so a `taskkill` after it
 /// tests the guard. It is set on the main thread once WebView2 has started, about a second after
 /// the window answers messages; a bare `WM_CLOSE` before that leaves KeyClean in the tray (known
-/// gap, ADR 0016). Returns how many windows were guarded.
+/// gap, ADR 0016). The first attempt may log 0 windows and a later one, on focus, succeed, so any
+/// line with at least one window counts. Returns how many windows were guarded.
 fn wait_dashboard_guarded(id: &str) -> Result<u64, String> {
-    let (logged, log) = wait_log(id, DASHBOARD_GUARD, Duration::from_secs(15));
-    match ms_after(&log, DASHBOARD_GUARD) {
-        Some(n) if logged && n >= 1 => Ok(n),
-        Some(n) => Err(format!(
-            "the app set the dashboard's close guard on {n} windows; log: e2e-{id}-app.log"
-        )),
-        None => Err(format!(
-            "the app didn't log its dashboard close guard within 15 s; log: e2e-{id}-app.log"
-        )),
+    let guarded = |log: &str| {
+        log.lines()
+            .filter_map(|line| ms_after(line, DASHBOARD_GUARD))
+            .find(|&n| n >= 1)
+    };
+    let mut log = String::new();
+    if wait_until(Duration::from_secs(15), || {
+        log = app_log(id);
+        guarded(&log).is_some()
+    }) && let Some(n) = guarded(&log)
+    {
+        return Ok(n);
     }
+    Err(if log.contains(DASHBOARD_GUARD) {
+        format!(
+            "the app logged its dashboard close guard, but on no window within 15 s; log: \
+             e2e-{id}-app.log"
+        )
+    } else {
+        format!("the app didn't log its dashboard close guard within 15 s; log: e2e-{id}-app.log")
+    })
 }
 
 /// The number right after `key` in `text`, e.g. the 412 of "confirmed visible 412 ms".
