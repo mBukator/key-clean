@@ -24,13 +24,13 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, TRUE, WPARAM};
+use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, TRUE, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, SC_CLOSE, WM_CLOSE,
-    WM_NCDESTROY, WM_SYSCOMMAND,
+    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, GetWindowThreadProcessId,
+    SC_CLOSE, WM_CLOSE, WM_NCDESTROY, WM_SYSCOMMAND,
 };
 use windows::core::BOOL;
 
@@ -71,23 +71,33 @@ pub fn guard_helper_windows(on_close: impl Fn() + Send + Sync + 'static) -> usiz
 /// Subclasses the dashboard window `hwnd` so a `WM_CLOSE` the user didn't start
 /// with the close button, Alt+F4 or the window menu calls the exit callback given to
 /// [`guard_helper_windows`] instead of closing the window. A user's close goes on as usual (to
-/// the tray). Returns whether the window was guarded.
+/// the tray). On failure, says why (for the log: thread ids and the Windows error, no input data).
 ///
 /// Call it on the thread that owns the window (the app's main thread), after
 /// [`guard_helper_windows`].
-pub fn guard_dashboard_close(hwnd: *mut c_void) -> bool {
-    USER_CLOSE.store(false, Ordering::SeqCst);
-    // SAFETY: the caller passes a window of the calling thread, as SetWindowSubclass requires;
-    // `dashboard_subclass` lives for the whole program. A stale handle makes the call fail.
-    unsafe {
-        SetWindowSubclass(
-            HWND(hwnd),
-            Some(dashboard_subclass),
-            DASHBOARD_SUBCLASS_ID,
-            0,
-        )
+pub fn guard_dashboard_close(hwnd: *mut c_void) -> Result<(), String> {
+    let hwnd = HWND(hwnd);
+    // SAFETY: reads which thread owns `hwnd`; a stale handle returns 0.
+    let owner = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    // SAFETY: no preconditions.
+    let current = unsafe { GetCurrentThreadId() };
+    if owner != current {
+        return Err(format!(
+            "the window belongs to thread {owner}, not to the calling thread {current}"
+        ));
     }
-    .as_bool()
+    USER_CLOSE.store(false, Ordering::SeqCst);
+    // SAFETY: `hwnd` belongs to the calling thread (checked above), as SetWindowSubclass
+    // requires; `dashboard_subclass` lives for the whole program.
+    let set =
+        unsafe { SetWindowSubclass(hwnd, Some(dashboard_subclass), DASHBOARD_SUBCLASS_ID, 0) };
+    if set.as_bool() {
+        Ok(())
+    } else {
+        // SAFETY: no preconditions; read right after the failed call.
+        let error = unsafe { GetLastError() };
+        Err(format!("SetWindowSubclass failed (error {})", error.0))
+    }
 }
 
 /// The dashboard's subclass procedure.

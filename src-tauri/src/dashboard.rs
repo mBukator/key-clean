@@ -4,9 +4,10 @@
 //! minimum size stay in `tauri.conf.json` with `"create": false`, so Tauri doesn't build it at
 //! startup; [`open`] builds it from that config.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::MAIN_WINDOW;
 
@@ -105,12 +106,37 @@ fn build(app: &AppHandle, tab: Option<Tab>) -> tauri::Result<()> {
     }
     let window = WebviewWindowBuilder::from_config(app, &config)?.build()?;
     // Closing the dashboard sends KeyClean to the tray, but `taskkill` must still exit it. The
-    // subclass has to be set on the main thread, which owns the window.
-    let handle = window.clone();
-    app.run_on_main_thread(move || match handle.hwnd() {
-        Ok(hwnd) if keyclean_win::guard_dashboard_close(hwnd.0) => {}
-        _ => eprintln!("[keyclean] dashboard: close guard not set"),
-    })?;
+    // subclass has to be set on the thread that owns the window: tried once the window is built,
+    // and once more on its first window event (handled on the event loop's thread) if that failed.
+    let guarded = Arc::new(AtomicBool::new(false));
+    let first = window.clone();
+    let first_guarded = Arc::clone(&guarded);
+    app.run_on_main_thread(move || guard_close(&first, &first_guarded, "after build"))?;
+    let later = window.clone();
+    let retried = AtomicBool::new(false);
+    window.on_window_event(move |_| {
+        if !retried.swap(true, Ordering::SeqCst) {
+            guard_close(&later, &guarded, "on its first window event");
+        }
+    });
     let _ = window.set_focus();
     Ok(())
+}
+
+/// Sets the dashboard's close guard unless it is set; logs the outcome.
+fn guard_close(window: &WebviewWindow, guarded: &AtomicBool, when: &str) {
+    if guarded.load(Ordering::SeqCst) {
+        return;
+    }
+    let result = window
+        .hwnd()
+        .map_err(|e| format!("no window handle: {e}"))
+        .and_then(|hwnd| keyclean_win::guard_dashboard_close(hwnd.0));
+    match result {
+        Ok(()) => {
+            guarded.store(true, Ordering::SeqCst);
+            eprintln!("[keyclean] dashboard: close guard set {when}");
+        }
+        Err(why) => eprintln!("[keyclean] dashboard: close guard not set {when}: {why}"),
+    }
 }
