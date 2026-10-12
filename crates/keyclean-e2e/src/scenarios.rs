@@ -870,6 +870,10 @@ const APP_WINDOW_CLASS: &str = "Tauri Window";
 /// Debug-only app variable: start without the dashboard, as KeyClean in the tray (ADR 0016).
 const NO_DASHBOARD: &str = "KEYCLEAN_E2E_NO_DASHBOARD";
 
+/// Hidden windows the app's close guard subclasses since M8: tao's event target, the
+/// single-instance window and the tray icon's window.
+const TRAY_GUARDED_WINDOWS: usize = 3;
+
 /// Quits the app with `taskkill /PID <pid>` without `/F` (`WM_CLOSE` to its windows, which the
 /// app's close guard turns into an exit; ADR 0016) and waits up to `timeout` for it to exit.
 /// Returns how long the exit took. Closing the dashboard only sends KeyClean to the tray since
@@ -3060,6 +3064,22 @@ fn tray_idle(ctx: &mut Ctx<'_>) -> Outcome {
             .find(|l| l.contains("close guard:"))
             .unwrap_or("no close guard line")
             .to_string();
+        // tao's event target and the single-instance window (2 before M8, in every M7 harness
+        // log), plus the tray icon's hidden window. taskkill may reach only one window, so a
+        // clean exit alone doesn't prove the tray's is guarded.
+        let guarded = guard_line
+            .split("close guard: ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<usize>().ok());
+        if guarded != Some(TRAY_GUARDED_WINDOWS) {
+            let _ = quit_app(&mut app.0, Duration::from_secs(10));
+            return Err(format!(
+                "expected the close guard to cover {TRAY_GUARDED_WINDOWS} helper windows \
+                 (tao, single instance, tray), the log says \"{guard_line}\"; log: \
+                 e2e-S42-app.log"
+            ));
+        }
         let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
         let left = expect_no_keyclean_left()?;
         expect_probes_pass(ctx.observer)?;
