@@ -416,7 +416,7 @@ pre-created overlay is needed (ADR 0001, 0014).
 
 Manual, 2026-10-12: steps 1-15 and 20 passed (step 4 on a retry; 13 and 14 rerun with the
 dashboard guard active); optional steps 16-19 were skipped. Step 3 showed both `keyclean.exe` at
-0 % CPU with the dashboard closed; their memory wasn't recorded.
+0 % CPU with the dashboard closed; reading their memory was skipped.
 
 Found in M8: since M0 the app process registered for Raw Input from every keyboard and mouse
 (tao's default). Fixed: S42 logs 0 registrations.
@@ -446,7 +446,7 @@ Acceptance:
 - [x] Runs in system tray (§60 "Application")
 - [x] System tray works (§60 "Windows")
 - [x] Idle cost near zero with the dashboard closed (0 % CPU, no webview, no Raw Input
-      registration; memory not recorded)
+      registration; memory reading skipped)
 
 ### M9 - Global shortcut
 
