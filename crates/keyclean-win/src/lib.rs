@@ -19,12 +19,13 @@ mod msg;
 mod protocol;
 mod qpc;
 mod raw_input;
+mod taskbar;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 mod watchdog;
 
 pub use client::EngineClient;
-pub use close_guard::guard_helper_windows;
+pub use close_guard::{guard_dashboard_close, guard_helper_windows};
 pub use desktop::is_on_current_desktop;
 pub use device_watch::DeviceWatch;
 pub use devices::input_devices;
@@ -36,3 +37,5 @@ pub use engine::{
 pub use error::EngineError;
 pub use keyclean_core;
 pub use keyclean_core::session::{EndReason, SessionState, SystemTransition};
+pub use raw_input::registered_raw_input_count;
+pub use taskbar::{taskbar_uses_light_theme, watch_setting_changes};

@@ -8,12 +8,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod bridge;
+mod dashboard;
 mod devices;
-// Partly used until the tray and notifications land.
-#[allow(dead_code)]
 mod i18n;
 mod overlay;
 mod settings;
+mod tray;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -28,12 +28,13 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, DeviceEventFilter, Emitter, Manager, RunEvent, State, WindowEvent};
 
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
 use overlay::OverlayState;
 use settings::SettingsState;
+/// The dashboard's window label; its capability (`capabilities/main.json`) is keyed to it.
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
 const RELAY_DRAIN: Duration = Duration::from_secs(1);
@@ -167,7 +168,9 @@ fn start_engine(app: &AppHandle) {
 ///
 /// `KEYCLEAN_E2E_AUTOLOCK_REPEAT=<n>` (1-20, default 1) locks `n` times in a row, each once the
 /// previous lock has ended and a second has passed, so the harness can measure the overlay with
-/// WebView2 already warm.
+/// WebView2 already warm. `KEYCLEAN_E2E_AUTOLOCK_GAP_MS=<ms>` (up to 30 000) waits longer after
+/// each lock ends; with no dashboard open, WebView2 then shuts down between locks, so each one
+/// starts it cold.
 #[cfg(debug_assertions)]
 fn e2e_autolock(app: &AppHandle) {
     let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
@@ -177,6 +180,12 @@ fn e2e_autolock(app: &AppHandle) {
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .map_or(1, |n| n.clamp(1, 20));
+    let gap = std::env::var("KEYCLEAN_E2E_AUTOLOCK_GAP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(Duration::from_secs(1), |ms| {
+            Duration::from_millis(ms.clamp(1_000, 30_000))
+        });
     let Some(seconds) = seconds else {
         return;
     };
@@ -199,7 +208,7 @@ fn e2e_autolock(app: &AppHandle) {
                     }
                     pause(Duration::from_millis(200)).await;
                 }
-                pause(Duration::from_secs(1)).await;
+                pause(gap).await;
             }
             if let Err(e) = overlay::lock(app.clone(), LockRequest::new(duration)).await {
                 eprintln!("[keyclean] e2e autolock failed: {}", e.details);
@@ -249,9 +258,16 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
                     status.clone()
                 };
                 let idle = snapshot.is_idle();
+                tray::show(&app);
+                let show_problem = matches!(event, EngineEvent::SessionEnded { .. })
+                    && snapshot.ended_with_problem();
                 // To every window: the main window and the overlay.
                 let _ = app.emit(STATUS_EVENT, snapshot);
                 follow_overlay(&app, &event, idle);
+                if show_problem && !is_exiting(&app) {
+                    // Opened even if it was closed, so the plain-language error is seen (§46).
+                    dashboard::open(&app);
+                }
             }
             if engine_died {
                 restart_engine(&app);
@@ -298,6 +314,7 @@ fn update_status(app: &AppHandle, update: impl FnOnce(&mut StatusDto)) {
             update(&mut status);
             status.clone()
         };
+        tray::show(app);
         let _ = app.emit(STATUS_EVENT, snapshot);
     }
 }
@@ -353,10 +370,22 @@ fn restart_engine(app: &AppHandle) {
     eprintln!("[keyclean] engine restarted");
 }
 
-fn stop_engine(app: &AppHandle) {
+/// Marks the app as exiting: an engine that dies now isn't restarted, and a lock that ends now
+/// doesn't open the dashboard. Set by every exit request before it is made, and again on exit.
+fn mark_exiting(app: &AppHandle) {
     if let Some(exiting) = app.try_state::<Exiting>() {
         exiting.0.store(true, Ordering::SeqCst);
     }
+}
+
+/// Exits KeyClean: Quit, the close guard, an overlay close request. The exit ends any lock.
+fn exit_app(app: &AppHandle) {
+    mark_exiting(app);
+    app.exit(0);
+}
+
+fn stop_engine(app: &AppHandle) {
+    mark_exiting(app);
     if let Some(slot) = app.try_state::<EngineSlot>() {
         let engine = guard(&slot.0).take();
         drop(engine); // Releases any lock and stops the engine process.
@@ -371,32 +400,69 @@ fn stop_engine(app: &AppHandle) {
     }
 }
 
-fn focus_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+/// Whether KeyClean stays running when its last window closes: only once its tray icon exists,
+/// so there is always a way back to the app and to Quit (ADR 0016).
+struct KeepInTray(AtomicBool);
+
+fn keeps_running_in_tray(app: &AppHandle) -> bool {
+    app.try_state::<KeepInTray>()
+        .is_some_and(|k| k.0.load(Ordering::SeqCst))
+}
+
+/// Debug builds only: `KEYCLEAN_E2E_NO_DASHBOARD=1` starts without the dashboard, as a start from
+/// the tray will (M10), so the harness can measure a lock with no webview open (ADR 0008).
+#[cfg(debug_assertions)]
+fn start_without_dashboard() -> bool {
+    std::env::var("KEYCLEAN_E2E_NO_DASHBOARD").is_ok_and(|v| v == "1")
+}
+
+#[cfg(not(debug_assertions))]
+fn start_without_dashboard() -> bool {
+    false
 }
 
 /// Builds and runs the Tauri application. Exits the process with code 1 if Tauri fails.
 pub fn run() {
     let app = tauri::Builder::default()
         // Must be registered first (invariant 12: single instance).
+        // A second launch opens the dashboard of the running instance, then exits.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            focus_main_window(app);
+            dashboard::open(app);
         }))
         // Used from Rust only: no window is granted its commands (src-tauri/capabilities/).
         .plugin(tauri_plugin_store::Builder::new().build())
+        // tao registers the app for Raw Input from every mouse and keyboard by default, which
+        // would let the app see input while its window has focus. `Always` removes that
+        // registration (invariant 4; the engine process registers its own, during a lock only).
+        .device_event_filter(DeviceEventFilter::Always)
         .setup(|app| {
-            // `setup` runs on the main thread, which owns the hidden helper windows.
-            let handle = app.handle().clone();
-            let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
-            eprintln!("[keyclean] close guard: {guarded} helper windows");
+            // Runs after the device event filter is applied. The harness checks it reads 0.
+            match keyclean_win::registered_raw_input_count() {
+                Some(n) => eprintln!("[keyclean] app raw input registrations: {n}"),
+                None => eprintln!("[keyclean] app raw input registrations: unknown"),
+            }
             app.manage(SettingsState::load(app.handle()));
             app.manage(OverlayState::new());
+            app.manage(dashboard::Building::new());
+            app.manage(KeepInTray(AtomicBool::new(false)));
             start_engine(app.handle());
             devices::start(app.handle());
+            // Without a tray icon there would be no way back once the dashboard closes, so
+            // closing the last window then exits, as before M8.
+            let mode = guard(&app.state::<StatusStore>().0).tray_mode();
+            match tray::create(app.handle(), mode) {
+                Ok(()) => app.state::<KeepInTray>().0.store(true, Ordering::SeqCst),
+                Err(e) => eprintln!("[keyclean] tray icon failed: {e}"),
+            }
+            // `setup` runs on the main thread, which owns the hidden helper windows. After the
+            // tray, so its hidden window is guarded too.
+            let handle = app.handle().clone();
+            let guarded = keyclean_win::guard_helper_windows(move || exit_app(&handle));
+            eprintln!("[keyclean] close guard: {guarded} helper windows");
+            // A manual launch opens the dashboard (start minimized is M10, §29).
+            if !start_without_dashboard() {
+                dashboard::open(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -414,12 +480,22 @@ pub fn run() {
 
     match app {
         Ok(app) => app.run(|handle, event| match event {
-            // Closing the main window exits, also while the overlay is open.
+            // The dashboard's close guard, again: idempotent, and this runs on the main thread.
             RunEvent::WindowEvent {
                 label,
-                event: WindowEvent::Destroyed,
+                event: WindowEvent::Focused(true),
                 ..
-            } if label == MAIN_WINDOW => handle.exit(0),
+            } if label == MAIN_WINDOW => dashboard::guard_close(),
+            // The last window closed (the dashboard, or the overlay with the dashboard closed).
+            // With a tray icon KeyClean stays running there; Quit, the close guard and an
+            // overlay close request exit with a code, which this doesn't prevent.
+            RunEvent::ExitRequested { code, api, .. } => {
+                if code.is_none() && keeps_running_in_tray(handle) {
+                    api.prevent_exit();
+                } else {
+                    mark_exiting(handle);
+                }
+            }
             // Once the event loop runs, so the overlay's 2 s budget doesn't include startup.
             #[cfg(debug_assertions)]
             RunEvent::Ready => e2e_autolock(handle),

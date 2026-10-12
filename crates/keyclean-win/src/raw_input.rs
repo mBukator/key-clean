@@ -20,10 +20,11 @@
 
 use std::mem::size_of;
 
-use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM};
 use windows::Win32::UI::Input::{
-    GetRawInputData, HRAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_HEADER, RIDEV_DEVNOTIFY,
-    RIDEV_INPUTSINK, RIDEV_REMOVE, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE, RegisterRawInputDevices,
+    GetRawInputData, GetRegisteredRawInputDevices, HRAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER,
+    RID_HEADER, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RIDEV_REMOVE, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+    RegisterRawInputDevices,
 };
 
 /// HID usage page "Generic Desktop Controls".
@@ -32,6 +33,22 @@ const USAGE_PAGE_GENERIC: u16 = 0x01;
 const USAGE_MOUSE: u16 = 0x02;
 /// HID usage "Keyboard" on the generic desktop page.
 const USAGE_KEYBOARD: u16 = 0x06;
+
+/// How many Raw Input device classes the calling process has registered. Zero in the engine
+/// process while it is idle, and always zero in the app process (invariant 4). Returns `None` if
+/// Windows reports an error.
+pub fn registered_raw_input_count() -> Option<usize> {
+    let mut count = 0u32;
+    // SAFETY: a NULL buffer asks only for the number of registered devices, written to `count`.
+    let result = unsafe {
+        GetRegisteredRawInputDevices(None, &mut count, size_of::<RAWINPUTDEVICE>() as u32)
+    };
+    // SAFETY: GetLastError has no preconditions.
+    if result == u32::MAX && unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+    Some(count as usize)
+}
 
 /// Which kind of device a raw input message came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

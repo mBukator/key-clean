@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useState, type ReactNode } from "react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { t } from "../shared/localization/t";
 import type { ErrorInfo, LockOptions, LockTargets } from "../shared/types/engine";
@@ -14,6 +15,19 @@ import { useDevices, useEngineStatus, useLockOptions } from "./useEngine";
 
 type TabId = "clean" | "devices" | "settings";
 
+/** Sent by the app when the tray's Settings item is used while the dashboard is open. */
+const OPEN_TAB_EVENT = "open-tab";
+
+function isTabId(value: unknown): value is TabId {
+    return value === "clean" || value === "devices" || value === "settings";
+}
+
+/** The tab the app asked for when it opened the window (`?tab=settings`), or Clean. */
+function initialTab(): TabId {
+    const asked = new URLSearchParams(window.location.search).get("tab");
+    return isTabId(asked) ? asked : "clean";
+}
+
 /**
  * The dashboard (§9). It only displays the engine's state and sends requests; the engine owns
  * every lock and its exits (invariant 3).
@@ -23,11 +37,36 @@ export function App() {
     const status = useEngineStatus(setRequestError);
     const devices = useDevices(setRequestError);
     const [options, setOptions] = useLockOptions(setRequestError);
-    const [tab, setTab] = useState<TabId>("clean");
+    const [tab, setTab] = useState<TabId>(initialTab);
     // null until the user changes them: the remembered choices from the options apply.
     const [choice, setChoice] = useState<DurationChoice | null>(null);
     const [targets, setTargets] = useState<LockTargets | null>(null);
     const [pending, setPending] = useState(false);
+
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+        let disposed = false;
+        getCurrentWebviewWindow()
+            .listen<unknown>(OPEN_TAB_EVENT, (e) => {
+                if (isTabId(e.payload)) {
+                    setTab(e.payload);
+                }
+            })
+            .then((fn) => {
+                if (disposed) {
+                    fn();
+                } else {
+                    unlisten = fn;
+                }
+            })
+            .catch((err: unknown) => {
+                setRequestError(toErrorInfo(err));
+            });
+        return () => {
+            disposed = true;
+            unlisten?.();
+        };
+    }, []);
 
     const tabs: readonly Tab<TabId>[] = [
         { id: "clean", label: t("tab.clean") },

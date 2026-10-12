@@ -23,6 +23,12 @@ pub fn next_tick(remaining: Duration) -> Option<Duration> {
     Some(remaining.saturating_sub(Duration::from_secs(shown - 1)))
 }
 
+/// `secs` as `mm:ss` ("01:42", "60:00"), the same form the window and the overlay show. Minutes
+/// keep counting past 59 (a lock lasts at most 60 min, ADR 0006).
+pub fn format_clock(secs: u64) -> String {
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32,6 +38,15 @@ mod tests {
 
     const fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    #[test]
+    fn clock_is_minutes_and_seconds() {
+        assert_eq!(format_clock(0), "00:00");
+        assert_eq!(format_clock(9), "00:09");
+        assert_eq!(format_clock(102), "01:42");
+        assert_eq!(format_clock(3_599), "59:59");
+        assert_eq!(format_clock(3_600), "60:00");
     }
 
     #[test]

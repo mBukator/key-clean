@@ -59,11 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One shared error block for every error: a plain sentence plus "View technical details".
 - The M7 manual test, research note and ADR 0015; ADR 0005 amended.
 
+- System tray (M8): KeyClean runs from a tray icon. Its menu locks the keyboard or the selected devices with the remembered duration, opens the dashboard or its Settings tab, and quits; during a lock it shows the countdown, Unlock and Show overlay. Left-click opens the dashboard (ADR 0016).
+- The tray icon is a keycap with an LED dot: a cut-out shape that follows the taskbar's light or dark theme at idle, amber while locked, sharp at 100-200 % scaling.
+- A failed lock started from the tray shows in the tray, and the dashboard shows the error when opened; a lock that ends with an error or a lost lock screen opens the dashboard.
+- Harness checks S42-S44 (KeyClean stays in the tray with no window and quits cleanly, no WebView2 left after the dashboard closes, `taskkill` with the dashboard open), S41 `--no-dashboard`, the M8 manual test, research note and ADR 0016.
+
 ### Changed
 
 - Locking now waits for the overlay, so `lock_input` returns once the lock has been requested or the overlay failed.
 - `lock_input` accepts any whole number of seconds from 10 up to the maximum lock duration instead of the presets only, and sends that maximum to the engine. `get_lock_options` also returns the range and the remembered choices; the new `set_max_lock` command changes the maximum.
 - A lock as long as the maximum lock duration now reads as complete instead of "the safety time limit was reached" (both deadlines fall at the same moment).
+- Closing the dashboard no longer exits KeyClean: it destroys the window and KeyClean stays in the tray. Quit is in the tray menu. A launch or a second launch opens the dashboard.
+- After a lock, the dashboard comes back only if it was open when the lock started.
+- The harness ends the app with `taskkill` (without `/F`) instead of closing its window; S11 now checks that closing the dashboard mid-lock leaves the lock running, and S12 that a second launch opens the dashboard.
 - The elevated-window warning moves from M7 to M9 (global shortcut): from the dashboard, KeyClean is always in front when a lock starts.
 - The harness and manual tests use a debug exe with the UI built in: `cargo build -p keyclean --features tauri/custom-protocol`.
 - The window's lock commands are now `lock_input` and `unlock_input`, with keyboard and mouse choices.
@@ -73,5 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The app process registered for Raw Input from every keyboard and mouse (a default of the window library), so it received input messages while its window had focus. Nothing was stored, but KeyClean now registers for none at idle (invariant 4, ADR 0012 amended).
 - `taskkill` without `/F` made the KeyClean window hang (the lock still ended). The app now exits cleanly.
 - With KeyClean's own window focused, Windows could skip the keyboard hook during a lock, so Win opened the Start menu and Ctrl+Alt+K needed several tries. The hook now lives in a process without a WebView.

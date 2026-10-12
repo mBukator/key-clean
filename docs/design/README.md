@@ -17,15 +17,17 @@ Built in their milestones (`docs/ROADMAP.md`): the overlay in **M6**, the Clean 
 
 Chosen by Max on 2026-10-07 from images he generated; both may be committed.
 
-| File                     | Shows                                                                              | Used for                                                  | Milestone |
-| ------------------------ | ---------------------------------------------------------------------------------- | --------------------------------------------------------- | --------- |
-| `brand/icon-draft.png`   | Satin-black keycap, three-quarter view, glowing amber K, amber glow at the base    | App icon at 32-256 px, installer, README, About           | M11       |
-| `brand/banner-draft.png` | Dark keyboard from above, Ctrl, Alt and K lit amber, empty left side for the title | README banner and social preview, title added as SVG text | M12       |
+| File                        | Shows                                                                              | Used for                                                  | Milestone |
+| --------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------- | --------- |
+| `brand/icon-draft.png`      | Satin-black keycap, three-quarter view, glowing amber K, amber glow at the base    | App icon at 32-256 px, installer, README, About           | M11       |
+| `brand/banner-draft.png`    | Dark keyboard from above, Ctrl, Alt and K lit amber, empty left side for the title | README banner and social preview, title added as SVG text | M12       |
+| `brand/tray-icon-draft.png` | White keycap, front view: wider skirt, top face cut out, an LED dot, no legend     | Tray icon (traced in `assets/tray/`)                      | M8        |
 
 - At 16 and 20 px the 3D key turns into a blob, so those `.ico` sizes get a hand-drawn flat
   version: rounded cap, amber K, amber base line.
-- The tray icon is drawn in M8 from the same key: a flat outline with the K, in a light and a dark
-  variant for the taskbar theme, plus a locked variant.
+- The tray icon is Max's own drawing (`brand/tray-icon-draft.png`, added 2026-10-12), traced as
+  SVG in `assets/tray/`: white for a dark taskbar, near-black for a light one, and the same shape in amber while
+  locked.
 - Both PNGs are about 1.5 MB; compress them before they go into the README (M12).
 
 ## Mood references (local only)

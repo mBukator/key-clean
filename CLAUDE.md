@@ -110,8 +110,9 @@ bun run typecheck
 bun run lint
 bun run format               # / format:check
 bunx merlin                  # interactive commit wizard
+bun scripts/tray-icons.mjs   # re-render the tray icon PNGs after editing assets/tray/*.svg
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock (add `-- --mouse` for the mouse too)
-cargo run -p keyclean-e2e    # Max only — automated M1-M6 checks (~7 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33, --overlay-latency adds S41)
+cargo run -p keyclean-e2e    # Max only — automated M1-M8 checks (~9 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33, --overlay-latency adds S41, plus --no-dashboard for S41 with no webview open)
 ```
 
 If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).
