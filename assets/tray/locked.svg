@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- KeyClean tray icon, locked, for either taskbar: a flat keycap with a K, drawn on the 16 px grid. -->
+  <rect x="1.5" y="1.5" width="13" height="13" rx="3" fill="#f5a54a" stroke="#b8721f" stroke-width="1"/>
+  <g fill="none" stroke="#0a0908" stroke-width="1.5">
+    <path d="M5.75 3.75V10.5"/>
+    <path d="M10.6 3.75L6.25 7.6"/>
+    <path d="M7.45 6.6L10.75 10.5"/>
+  </g>
+  <rect x="4" y="12" width="8" height="1" fill="#0a0908"/>
+</svg>

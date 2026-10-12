@@ -12,15 +12,25 @@
 //! callback and leaves the window alone. Subclassing only works from the thread that owns the window
 //! (`SetWindowSubclass` docs), so it must run on the app's main thread after the windows exist (in
 //! Tauri's `setup`).
+//!
+//! From M8, closing the dashboard sends KeyClean to the tray instead of exiting (ADR 0016). A
+//! `WM_CLOSE` that `taskkill` sends to the dashboard must still exit. [`guard_dashboard_close`]
+//! tells the two apart: the close button, Alt+F4 and the window menu send `WM_SYSCOMMAND` with
+//! `SC_CLOSE`, which `DefWindowProc` turns into `WM_CLOSE` [docs: `WM_SYSCOMMAND`]; `taskkill`
+//! sends `WM_CLOSE` alone [assumption, tested 2026-10-02 and in M6 harness S23]. A `WM_CLOSE` with
+//! no `SC_CLOSE` just before it calls the exit callback.
 
+use std::ffi::c_void;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, TRUE, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, WM_CLOSE, WM_NCDESTROY,
+    EnumThreadWindows, GCLP_HMODULE, GetClassLongPtrW, GetClassNameW, SC_CLOSE, WM_CLOSE,
+    WM_NCDESTROY, WM_SYSCOMMAND,
 };
 use windows::core::BOOL;
 
@@ -28,8 +38,14 @@ use windows::core::BOOL;
 const WEBVIEW_CLASS: &str = "Tauri Window";
 /// Subclass id; any constant unique to this module.
 const SUBCLASS_ID: usize = 0x4B43_434C;
+/// Subclass id of the dashboard guard.
+const DASHBOARD_SUBCLASS_ID: usize = 0x4B43_4442;
 
 static ON_CLOSE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+/// Set by the dashboard's `SC_CLOSE` and taken by the `WM_CLOSE` it produces. One dashboard at a
+/// time, all on the main thread.
+static USER_CLOSE: AtomicBool = AtomicBool::new(false);
 
 /// Subclasses every top-level window of the calling thread that this executable registered,
 /// except the webview windows, so `WM_CLOSE` calls `on_close` instead of destroying it. Returns how
@@ -50,6 +66,67 @@ pub fn guard_helper_windows(on_close: impl Fn() + Send + Sync + 'static) -> usiz
         )
     };
     guarded
+}
+
+/// Subclasses the dashboard window `hwnd` so a `WM_CLOSE` the user didn't start
+/// with the close button, Alt+F4 or the window menu calls the exit callback given to
+/// [`guard_helper_windows`] instead of closing the window. A user's close goes on as usual (to
+/// the tray). Returns whether the window was guarded.
+///
+/// Call it on the thread that owns the window (the app's main thread), after
+/// [`guard_helper_windows`].
+pub fn guard_dashboard_close(hwnd: *mut c_void) -> bool {
+    USER_CLOSE.store(false, Ordering::SeqCst);
+    // SAFETY: the caller passes a window of the calling thread, as SetWindowSubclass requires;
+    // `dashboard_subclass` lives for the whole program. A stale handle makes the call fail.
+    unsafe {
+        SetWindowSubclass(
+            HWND(hwnd),
+            Some(dashboard_subclass),
+            DASHBOARD_SUBCLASS_ID,
+            0,
+        )
+    }
+    .as_bool()
+}
+
+/// The dashboard's subclass procedure.
+///
+/// # Safety
+/// Called by Windows only, with valid subclass-procedure arguments.
+unsafe extern "system" fn dashboard_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        // The low four bits are used internally by Windows [docs: WM_SYSCOMMAND].
+        WM_SYSCOMMAND if (wparam.0 & 0xFFF0) == SC_CLOSE as usize => {
+            USER_CLOSE.store(true, Ordering::SeqCst);
+            // SAFETY: default processing with the original arguments; it sends WM_CLOSE.
+            let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            USER_CLOSE.store(false, Ordering::SeqCst);
+            result
+        }
+        WM_CLOSE if !USER_CLOSE.load(Ordering::SeqCst) => {
+            if let Some(on_close) = ON_CLOSE.get() {
+                on_close();
+            }
+            LRESULT(0)
+        }
+        WM_NCDESTROY => {
+            // SAFETY: removing our own subclass from a window of this thread, as the docs ask
+            // before the window is destroyed.
+            let _ = unsafe { RemoveWindowSubclass(hwnd, Some(dashboard_subclass), id) };
+            // SAFETY: default processing with the original arguments.
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        // SAFETY: default processing with the original arguments.
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
 }
 
 /// `EnumThreadWindows` callback.

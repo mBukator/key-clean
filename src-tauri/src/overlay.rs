@@ -22,7 +22,7 @@ use tauri::window::Color;
 use tauri::{AppHandle, Manager, Monitor, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 use crate::bridge::ErrorDto;
-use crate::{EngineSlot, StatusStore, guard, i18n};
+use crate::{EngineSlot, StatusStore, dashboard, guard, i18n};
 
 /// Prefix of the overlay window labels; each attempt gets its own window, `overlay-<n>`, so a
 /// window still closing never collides with the next one. The overlay capability matches it.
@@ -68,6 +68,9 @@ struct Inner {
     /// Keeps the display on from the overlay's confirmation until its window record is cleared
     /// (ADR 0015). Dropping it releases the request.
     display: Option<DisplayRequest>,
+    /// Whether the dashboard was open when the current lock was requested; only then does it
+    /// come back to the front when the lock ends (ADR 0016).
+    dashboard_was_open: bool,
 }
 
 /// The overlay's state. At idle nothing is open and nothing runs.
@@ -86,6 +89,7 @@ impl OverlayState {
                 watch: None,
                 window: None,
                 display: None,
+                dashboard_was_open: false,
             }),
             origin: Instant::now(),
         }
@@ -151,6 +155,7 @@ pub async fn lock(app: AppHandle, request: LockRequest) -> Result<(), ErrorDto> 
         let (tx, rx) = mpsc::channel();
         inner.waiter = Some((id, tx));
         inner.window = Some(id);
+        inner.dashboard_was_open = dashboard::is_open(&app);
         inner.session = Some(OverlaySessionDto {
             attempt: id.0,
             seconds: plan.session.as_secs(),
@@ -240,9 +245,11 @@ async fn show_and_wait(
         // the app's own `destroy()` doesn't. Like closing the main window, it ends the lock and
         // exits KeyClean (Max's decision, 2026-10-07).
         tauri::WindowEvent::CloseRequested { .. } => {
+            // Marked first, so the lost-overlay ending doesn't open the dashboard on the way out.
+            crate::mark_exiting(&handle);
             gone(&handle, id, true);
             eprintln!("[keyclean] overlay: close requested; exiting");
-            handle.exit(0);
+            crate::exit_app(&handle);
         }
         tauri::WindowEvent::Destroyed => gone(&handle, id, false),
         _ => {}
@@ -356,7 +363,7 @@ fn close_window(app: &AppHandle, label: &str) {
 }
 
 /// The overlay window of attempt `id` is closing. Before it confirmed, the waiting request gives
-/// up; during the lock, the lock ends. When `exiting`, the main window isn't brought back, since
+/// up; during the lock, the lock ends. When `exiting`, the dashboard isn't brought back, since
 /// the app is about to exit.
 fn gone(app: &AppHandle, id: AttemptId, exiting: bool) {
     let state = app.state::<OverlayState>();
@@ -386,16 +393,22 @@ fn gone(app: &AppHandle, id: AttemptId, exiting: bool) {
 }
 
 /// Ends the lock because the overlay of attempt `id` went away. Runs once per attempt.
+/// The dashboard comes back if it was open; if it was closed, the relay opens it once the
+/// engine reports the end, since a lost overlay is a problem the user should read about.
 fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) {
     let state = app.state::<OverlayState>();
-    let (window, display) = {
+    let (window, display, dashboard_was_open) = {
         let mut inner = state.lock();
         if !inner.watch.is_some_and(|(w, _)| w == id) {
             return;
         }
         inner.watch = None;
         let display = inner.display.take();
-        (take_window(&mut inner, id), display)
+        (
+            take_window(&mut inner, id),
+            display,
+            inner.dashboard_was_open,
+        )
     };
     eprintln!("[keyclean] overlay lost ({loss:?}); ending the lock");
     guard(&app.state::<StatusStore>().0).mark_overlay_lost();
@@ -409,8 +422,8 @@ fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) 
     if let Some(label) = window {
         close_window(app, &label);
     }
-    if show_main {
-        crate::focus_main_window(app);
+    if show_main && dashboard_was_open {
+        dashboard::focus(app);
     }
 }
 
@@ -460,21 +473,36 @@ fn check(app: &AppHandle) {
     }
 }
 
-/// Closes the overlay once the lock is over (or never started), and brings the main window back
-/// (§16). Does nothing if no lock is being watched.
+/// Closes the overlay once the lock is over (or never started), and brings the dashboard back
+/// if it was open when the lock was requested (§16, ADR 0016); otherwise KeyClean stays in the
+/// tray. Does nothing if no lock is being watched.
 pub fn finish(app: &AppHandle) {
     let state = app.state::<OverlayState>();
-    let window = {
+    let (window, dashboard_was_open) = {
         let mut inner = state.lock();
         let Some((id, _)) = inner.watch.take() else {
             return;
         };
-        take_window(&mut inner, id)
+        (take_window(&mut inner, id), inner.dashboard_was_open)
     };
     if let Some(label) = window {
         close_window(app, &label);
     }
-    crate::focus_main_window(app);
+    if dashboard_was_open {
+        dashboard::focus(app);
+    }
+}
+
+/// Brings the overlay of the running lock back to the front and gives it focus (the tray's Show
+/// overlay), for example after Alt+Tab in a mouse-only lock. Does nothing if no lock is watched.
+pub fn bring_to_front(app: &AppHandle) {
+    let watched = app.state::<OverlayState>().lock().watch.map(|(id, _)| id);
+    if let Some(id) = watched
+        && let Some(window) = app.get_webview_window(&label(id))
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// The page asks what to show before the engine's first status arrives.

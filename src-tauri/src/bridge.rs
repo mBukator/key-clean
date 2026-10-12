@@ -11,6 +11,8 @@ use keyclean_win::{
 };
 use serde::Serialize;
 
+use crate::tray::TrayMode;
+
 /// Name of the event emitted to the main window on every status change.
 pub const STATUS_EVENT: &str = "engine-status";
 
@@ -26,6 +28,11 @@ pub struct ErrorDto {
 }
 
 impl ErrorDto {
+    /// Whether this is the error `e` would give.
+    pub fn is(&self, e: &EngineError) -> bool {
+        self.message_key == e.message_key()
+    }
+
     /// The requested lock duration is outside 10 s to the max-lock setting (ADR 0015).
     pub fn invalid_duration(seconds: u64, max_lock_secs: u64, why: DurationError) -> Self {
         ErrorDto {
@@ -126,6 +133,37 @@ impl StatusDto {
     /// Whether no lock is running or starting.
     pub fn is_idle(&self) -> bool {
         self.state == state_name(SessionState::Idle)
+    }
+
+    /// Records why a lock request failed before the engine was asked, for a request with no
+    /// window to show it (the tray). The dashboard and the tray read it from the status (ADR
+    /// 0016). Cleared when the next lock starts.
+    pub fn set_request_error(&mut self, error: ErrorDto) {
+        self.error = Some(error);
+    }
+
+    /// What the tray shows for this status.
+    pub fn tray_mode(&self) -> TrayMode {
+        match self.state {
+            s if s == state_name(SessionState::Starting) => TrayMode::Starting,
+            s if s == state_name(SessionState::Locked) => {
+                TrayMode::Cleaning(self.countdown_secs.unwrap_or(0))
+            }
+            s if s == state_name(SessionState::Unlocking) => TrayMode::Unlocking,
+            _ if !self.engine_available => TrayMode::Unavailable,
+            _ if self.error.is_some() => TrayMode::Problem,
+            _ => TrayMode::Ready,
+        }
+    }
+
+    /// Whether the last lock ended for a reason the user should read in the dashboard: an engine
+    /// failure or a lost overlay (ADR 0016). The other reasons are the user's own doing, the
+    /// timer, or a system transition.
+    pub fn ended_with_problem(&self) -> bool {
+        matches!(
+            self.last_end_reason,
+            Some(reason) if reason == OVERLAY_LOST || reason == end_reason_name(EndReason::EngineError)
+        )
     }
 
     /// A new lock is being requested: an earlier lost-overlay mark no longer applies.
@@ -387,6 +425,79 @@ mod tests {
         keyboard: false,
         mouse: true,
     };
+
+    #[test]
+    fn tray_mode_follows_the_status() {
+        let mut dto = StatusDto::initial(true);
+        assert_eq!(dto.tray_mode(), TrayMode::Unavailable);
+        dto.set_engine(true, None);
+        assert_eq!(dto.tray_mode(), TrayMode::Ready);
+        dto.apply(&status_with(
+            SessionState::Starting,
+            Some(Duration::from_secs(120)),
+        ));
+        assert_eq!(dto.tray_mode(), TrayMode::Starting);
+        dto.apply(&status_with(
+            SessionState::Locked,
+            Some(Duration::from_millis(101_500)),
+        ));
+        assert_eq!(dto.tray_mode(), TrayMode::Cleaning(102));
+        dto.apply(&status(SessionState::Unlocking));
+        assert_eq!(dto.tray_mode(), TrayMode::Unlocking);
+        dto.apply(&status(SessionState::Idle));
+        assert_eq!(dto.tray_mode(), TrayMode::Ready);
+    }
+
+    #[test]
+    fn a_failed_request_shows_as_a_problem_until_the_next_lock() {
+        let mut dto = StatusDto::initial(true);
+        dto.set_engine(true, None);
+        dto.set_request_error(ErrorDto::overlay_timeout("test".to_owned()));
+        assert_eq!(dto.tray_mode(), TrayMode::Problem);
+        dto.apply(&status(SessionState::Starting));
+        assert_eq!(dto.tray_mode(), TrayMode::Starting);
+        dto.apply(&status(SessionState::Idle));
+        assert_eq!(dto.tray_mode(), TrayMode::Ready);
+    }
+
+    #[test]
+    fn a_stopped_engine_outranks_its_error() {
+        let mut dto = StatusDto::initial(true);
+        dto.set_engine(false, Some(ErrorDto::from(&EngineError::NotRunning)));
+        assert_eq!(dto.tray_mode(), TrayMode::Unavailable);
+    }
+
+    #[test]
+    fn only_an_engine_error_or_a_lost_overlay_is_a_problem_ending() {
+        let ended = |reason: EndReason, overlay_lost: bool| {
+            let mut dto = StatusDto::initial(true);
+            dto.lock_requested(false);
+            if overlay_lost {
+                dto.mark_overlay_lost();
+            }
+            dto.apply(&EngineEvent::SessionEnded { reason });
+            dto.ended_with_problem()
+        };
+        assert!(ended(EndReason::EngineError, false));
+        assert!(ended(EndReason::UserRequest, true));
+        for reason in [
+            EndReason::Timeout,
+            EndReason::Emergency,
+            EndReason::HardDeadline,
+            EndReason::UserRequest,
+            EndReason::SystemTransition(SystemTransition::Suspend),
+        ] {
+            assert!(!ended(reason, false), "{reason:?}");
+        }
+        assert!(!StatusDto::initial(true).ended_with_problem());
+    }
+
+    #[test]
+    fn error_identity_is_its_message() {
+        let dto = ErrorDto::from(&EngineError::AlreadyActive);
+        assert!(dto.is(&EngineError::AlreadyActive));
+        assert!(!dto.is(&EngineError::NotRunning));
+    }
 
     #[test]
     fn targets_serialize_camel_case_and_outlive_the_session() {
