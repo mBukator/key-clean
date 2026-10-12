@@ -1,7 +1,10 @@
-//! The automated M1-M6 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! The automated M1-M8 checks. Each maps to steps in docs/testing/manual/M1.md, or to
 //! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3". The M5 checks (mouse
 //! and touchpad lock, ADR 0013) are marked "M5", the M6 checks (full-screen overlay, ADR 0014)
-//! "M6".
+//! "M6", the M8 checks (system tray and window lifecycle, ADR 0016) "M8".
+//!
+//! Since M8, closing the dashboard sends KeyClean to the tray instead of exiting, so the app
+//! scenarios end the app with `taskkill /PID` without `/F` ([`quit_app`]).
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -213,13 +216,13 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
         list.push(Scenario {
             id: "S11",
             steps: "13",
-            name: "Closing the app window mid-lock releases input",
+            name: "Closing the dashboard mid-lock keeps the lock and the app",
             run: close_app,
         });
         list.push(Scenario {
             id: "S12",
             steps: "14",
-            name: "A second app instance exits",
+            name: "A second app instance exits and opens the first one's dashboard",
             run: second_instance,
         });
         list.push(Scenario {
@@ -283,18 +286,47 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
                 name: "A silent overlay (no heartbeat) ends the lock",
                 run: overlay_silent,
             },
+            Scenario {
+                id: "S42",
+                steps: "M8",
+                name: "With no window open, KeyClean stays in the tray and quits cleanly",
+                run: tray_idle,
+            },
+            Scenario {
+                id: "S43",
+                steps: "M8",
+                name: "Closing the dashboard leaves no WebView2 process",
+                run: dashboard_closed_no_webview,
+            },
+            Scenario {
+                id: "S44",
+                steps: "M8",
+                name: "taskkill at idle with the dashboard open exits",
+                run: taskkill_idle_dashboard,
+            },
         ]);
     }
     list
 }
 
-/// S41, opt-in (`--overlay-latency`): how long the overlay takes to confirm, cold and warm.
-pub fn overlay_latency_scenario() -> Scenario {
-    Scenario {
-        id: "S41",
-        steps: "M6",
-        name: "Overlay confirmation latency over 10 locks (cold and warm)",
-        run: overlay_latency,
+/// S41, opt-in (`--overlay-latency`): how long the overlay takes to confirm, cold and warm. With
+/// `no_dashboard` (`--no-dashboard`), the app starts without its dashboard and pauses 16 s after
+/// each lock, so every overlay starts with no webview open.
+pub fn overlay_latency_scenario(no_dashboard: bool) -> Scenario {
+    if no_dashboard {
+        Scenario {
+            id: "S41",
+            steps: "M8",
+            name: "Overlay confirmation latency over 10 locks with no webview open",
+            run: overlay_latency_no_dashboard,
+        }
+    } else {
+        Scenario {
+            id: "S41",
+            steps: "M6",
+            name: "Overlay confirmation latency over 10 locks (cold and warm)",
+            run: overlay_latency,
+        }
     }
 }
 
@@ -808,7 +840,9 @@ fn start_app_with(
     for name in [
         "KEYCLEAN_E2E_AUTOLOCK",
         "KEYCLEAN_E2E_AUTOLOCK_REPEAT",
+        "KEYCLEAN_E2E_AUTOLOCK_GAP_MS",
         "KEYCLEAN_E2E_OVERLAY",
+        NO_DASHBOARD,
     ] {
         cmd.env_remove(name);
     }
@@ -832,6 +866,51 @@ fn start_app_with(
 /// Window class of the app's own windows (set by Tauri). Only these get the close request, like
 /// a user clicking X; the hidden helper windows of tao and the single-instance plugin don't.
 const APP_WINDOW_CLASS: &str = "Tauri Window";
+
+/// Debug-only app variable: start without the dashboard, as KeyClean in the tray (ADR 0016).
+const NO_DASHBOARD: &str = "KEYCLEAN_E2E_NO_DASHBOARD";
+
+/// Quits the app with `taskkill /PID <pid>` without `/F` (`WM_CLOSE` to its windows, which the
+/// app's close guard turns into an exit; ADR 0016) and waits up to `timeout` for it to exit.
+/// Returns how long the exit took. Closing the dashboard only sends KeyClean to the tray since
+/// M8, so this is how a scenario ends the app.
+fn quit_app(app: &mut Child, timeout: Duration) -> Result<Duration, String> {
+    let started = Instant::now();
+    // Already gone (the overlay was closed, for example). The open handle keeps the PID from
+    // being reused, but there is nothing to ask.
+    if matches!(app.try_wait(), Ok(Some(_))) {
+        return Ok(Duration::ZERO);
+    }
+    Command::new("taskkill")
+        .args(["/PID", &app.id().to_string()])
+        .output()
+        .map_err(|e| format!("couldn't run taskkill: {e}"))?;
+    if wait_exit(app, timeout) {
+        Ok(started.elapsed())
+    } else {
+        Err(format!(
+            "the app was still running {} s after taskkill /PID (without /F)",
+            timeout.as_secs()
+        ))
+    }
+}
+
+/// Whether process `pid` shows a visible window of the app's own class (dashboard or overlay).
+fn has_visible_app_window(pid: u32) -> bool {
+    system::windows_of(pid)
+        .iter()
+        .any(|w| w.class == APP_WINDOW_CLASS)
+}
+
+/// Waits for the app's dashboard: its visible, non-topmost window.
+fn wait_main_window(pid: u32, timeout: Duration) -> Option<isize> {
+    let mut found = None;
+    wait_until(timeout, || {
+        found = system::main_window(pid, APP_WINDOW_CLASS);
+        found.is_some()
+    });
+    found
+}
 
 /// A killed app's WebView2 helper processes take a moment to exit and release its data folder;
 /// starting the next instance too early can stall that instance's UI thread.
@@ -1049,60 +1128,59 @@ fn close_app(ctx: &mut Ctx<'_>) -> Outcome {
         let mut app = start_app(&exe, Some(15), "S11")?;
         let pid = app.0.id();
         wait_app_locked(ctx.observer, "S11", Duration::from_secs(20))?;
+        let main = wait_main_window(pid, Duration::from_secs(8))
+            .ok_or("the lock engaged, but no main window was found within 8 s")?;
         let responsive = wait_responsive(pid, Duration::from_secs(8));
-        let classes: Vec<String> = system::windows_of(pid)
-            .into_iter()
-            .map(|w| {
-                let state = if w.responding {
-                    ""
-                } else {
-                    " (not responding)"
-                };
-                format!("{}{state}", w.class)
-            })
-            .collect();
-        // The lock must still be engaged right before the close, so only the close can release it.
+        // The lock must still be engaged right before the close, or the check proves nothing.
         expect_probes_blocked(ctx.observer).map_err(|_| {
             "the autolock ended before the close was sent (app too slow)".to_string()
         })?;
-        // Only the main window: closing the overlay would end the lock by itself (S37), and this
-        // check is about the main window.
-        let main = system::main_window(pid, APP_WINDOW_CLASS).ok_or("found no main window")?;
+        // Only the main window: closing the overlay ends the lock and exits the app (S37).
         if !system::request_close_window(main) {
             return Err("couldn't send the close to the main window".into());
         }
         let closed = Instant::now();
-        let input_back = wait_input_back(ctx.observer, Duration::from_secs(5))?;
-        let exited = wait_exit(&mut app.0, Duration::from_secs(20)).then(|| closed.elapsed());
-
-        let detail = format!(
-            "windows responding: {}; app windows [{}], close sent to the main window (not the \
-             overlay); input back: {}; process exit: {}; log: e2e-S11-app.log",
-            describe(responsive, "no (waited 8 s)"),
-            classes.join(", "),
-            describe(input_back, "NO (waited 5 s)"),
-            describe(exited, "still running after 20 s"),
-        );
-        if input_back.is_none() || exited.is_none() {
-            return Err(detail);
+        if !wait_until(Duration::from_secs(5), || !system::window_exists(main)) {
+            return Err("the main window still existed 5 s after the close".into());
         }
-        let engine_gone = expect_no_keyclean_left().map_err(|e| format!("{detail}; {e}"))?;
-        let detail = format!(
-            "{detail}; no keyclean.exe left {} ms after exit",
-            engine_gone.as_millis()
-        );
-        // The app logs why the session ended; the close must be what ended it, not the timer.
-        let log = target_dir()
-            .map(|d| d.join("e2e-S11-app.log"))
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .unwrap_or_default();
-        if !log.contains("session ended: UserRequest") {
+        let window_gone = closed.elapsed();
+        // Once the close has been handled: it must not have released anything.
+        expect_probes_blocked(ctx.observer)
+            .map_err(|e| format!("closing the dashboard mid-lock released input: {e}"))?;
+        expect_app_running(&mut app.0, "its dashboard was closed mid-lock")?;
+        wait_input_back(ctx.observer, Duration::from_secs(20))?.ok_or_else(|| {
+            format!(
+                "input wasn't back within 20 s of closing the dashboard ({}); log: \
+                 e2e-S11-app.log",
+                ended_note(&app_log("S11"))
+            )
+        })?;
+        let input_back = closed.elapsed();
+        let (_, log) = wait_log("S11", "session ended:", Duration::from_secs(2));
+        if !log.contains("session ended: Timeout") {
             return Err(format!(
-                "{detail}; the app log doesn't show the close ending the session"
+                "the lock didn't end by its timer ({}); log: e2e-S11-app.log",
+                ended_note(&log)
             ));
         }
+        sleep(Duration::from_secs(3));
+        expect_app_running(&mut app.0, "its lock ended with the dashboard closed")?;
+        // Not asserted: ADR 0016 doesn't say whether a dashboard closed mid-lock comes back.
+        let reopened = system::main_window(pid, APP_WINDOW_CLASS).is_some();
+        let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+        let left = expect_no_keyclean_left()?;
         expect_no_stuck_keys()?;
-        Ok(format!("{detail}; {}", unlock_path_note(&log)))
+        Ok(format!(
+            "windows responding: {}; probes still blocked right after the close; main window \
+             gone {} ms after it, app kept running; lock ended by its timer, input back {} ms \
+             after the close; app still running 3 s later (dashboard shown again: {reopened}); \
+             taskkill exit after {} ms, no keyclean.exe left {} ms later",
+            describe(responsive, "no (waited 8 s)"),
+            window_gone.as_millis(),
+            input_back.as_millis(),
+            exited.as_millis(),
+            left.as_millis()
+        ))
     };
     let result = run();
     crate::harness::release_watched_keys();
@@ -1110,31 +1188,54 @@ fn close_app(ctx: &mut Ctx<'_>) -> Outcome {
     result.into()
 }
 
+/// S12: a second launch must exit and open the running instance's dashboard (ADR 0016,
+/// invariant 12). The first instance starts in the tray (no dashboard), so the window it shows
+/// afterwards can only come from the second launch.
 fn second_instance(_ctx: &mut Ctx<'_>) -> Outcome {
     let exe = match app_exe() {
         Ok(exe) => exe,
         Err(skip) => return skip,
     };
     let run = || -> Result<String, String> {
-        let mut first = start_app(&exe, None, "S12-first")?;
+        let mut first = start_app_with(&exe, None, &[(NO_DASHBOARD, "1")], "S12-first")?;
         let pid = first.0.id();
-        if wait_responsive(pid, Duration::from_secs(20)).is_none() {
-            return Err("the first instance didn't show a responding window".into());
+        // Logged at the end of the app's setup, once its tray and windows are in place.
+        if !wait_log("S12-first", "close guard:", Duration::from_secs(20)).0 {
+            return Err(
+                "the first instance didn't log its close guard within 20 s; log: \
+                 e2e-S12-first-app.log"
+                    .into(),
+            );
+        }
+        if has_visible_app_window(pid) {
+            return Err(format!(
+                "started with {NO_DASHBOARD}=1, the first instance showed a window anyway"
+            ));
         }
         let mut second = start_app(&exe, None, "S12-second")?;
+        let launched = Instant::now();
         if !wait_exit(&mut second.0, Duration::from_secs(10)) {
             return Err("the second instance kept running".into());
         }
-        if !matches!(first.0.try_wait(), Ok(None)) {
-            return Err("the first instance exited".into());
-        }
-        system::request_close(pid, APP_WINDOW_CLASS);
-        if !wait_exit(&mut first.0, Duration::from_secs(10)) {
+        let second_exit = launched.elapsed();
+        expect_app_running(&mut first.0, "a second instance started")?;
+        let exited_at = Instant::now();
+        if wait_main_window(pid, Duration::from_secs(10)).is_none() {
             return Err(
-                "second instance exited, but the first didn't exit after its window closed".into(),
+                "the second instance exited, but the first showed no dashboard within 10 s".into(),
             );
         }
-        Ok("second instance exited; first kept running, then closed cleanly".into())
+        let shown = exited_at.elapsed();
+        let quit = quit_app(&mut first.0, Duration::from_secs(10))?;
+        expect_no_keyclean_left()?;
+        Ok(format!(
+            "second instance exited after {} ms; the first (started in the tray) kept running \
+             and showed its dashboard {} ms later; taskkill exit after {} ms, no keyclean.exe \
+             left",
+            second_exit.as_millis(),
+            shown.as_millis(),
+            quit.as_millis()
+        ))
     };
     let result = run();
     sleep(WEBVIEW_SETTLE);
@@ -1222,9 +1323,11 @@ pub fn focused_app_chord() -> Outcome {
                 ))
             }
         })();
-        system::request_close(pid, APP_WINDOW_CLASS);
-        let _ = wait_exit(&mut app.0, Duration::from_secs(20));
-        outcome
+        let quit = quit_app(&mut app.0, Duration::from_secs(20));
+        let detail = outcome?;
+        quit?;
+        expect_no_keyclean_left()?;
+        Ok(detail)
     };
     let result = run();
     crate::harness::release_watched_keys();
@@ -1613,8 +1716,8 @@ fn kill_engine(ctx: &mut Ctx<'_>) -> Outcome {
                 "expected the app and one new engine process, found PIDs {pids:?}"
             ));
         }
-        app.0.kill().map_err(|e| format!("kill failed: {e}"))?;
-        let _ = wait_exit(&mut app.0, Duration::from_secs(5));
+        // Through the new engine: the app must still quit cleanly.
+        quit_app(&mut app.0, Duration::from_secs(10))?;
         expect_no_keyclean_left()?;
         expect_no_stuck_keys()?;
         Ok(format!(
@@ -2402,8 +2505,8 @@ fn probe_blocked(observer: &Observer) -> Result<bool, String> {
 }
 
 /// Runs one overlay check against the app: starts it with a `secs` autolock and `env`, runs
-/// `check`, then closes the app whatever happened (which also ends a lock a failed check left
-/// running) and waits until no keyclean.exe is left.
+/// `check`, then quits the app with `taskkill` whatever happened (which also ends a lock a failed
+/// check left running) and waits until no keyclean.exe is left.
 fn overlay_check(
     ctx: &mut Ctx<'_>,
     id: &'static str,
@@ -2418,16 +2521,10 @@ fn overlay_check(
     let observer = ctx.observer;
     let result = (|| -> Result<String, String> {
         let mut app = start_app_with(&exe, Some(secs), env, id)?;
-        let pid = app.0.id();
         let checked = check(observer, &mut app.0);
-        system::request_close(pid, APP_WINDOW_CLASS);
-        let exited = wait_exit(&mut app.0, Duration::from_secs(10));
+        let quit = quit_app(&mut app.0, Duration::from_secs(10));
         let detail = checked?;
-        if !exited {
-            return Err(format!(
-                "{detail}; but the app didn't exit within 10 s of its windows closing"
-            ));
-        }
+        quit.map_err(|e| format!("{detail}; but {e}"))?;
         expect_no_keyclean_left().map_err(|e| format!("{detail}; {e}"))?;
         Ok(detail)
     })();
@@ -2651,8 +2748,8 @@ enum Disturb {
 
 /// S37-S39: the overlay is closed, hidden or minimized mid-lock. Input must come back within
 /// `limit`, the app log must name the loss and the overlay window must be destroyed. A closed
-/// overlay exits the app, like closing the main window (ADR 0014); hidden or minimized, the app
-/// keeps running.
+/// overlay exits the app (ADR 0014, kept by ADR 0016, though closing the dashboard no longer
+/// does); hidden or minimized, the app keeps running.
 fn overlay_disturbed(
     ctx: &mut Ctx<'_>,
     id: &'static str,
@@ -2803,39 +2900,55 @@ const LATENCY_LOCKS: usize = 10;
 /// overlay starts WebView2 cold; the rest show how fast a warm one confirms. Every one must
 /// confirm within the 2 s budget.
 fn overlay_latency(ctx: &mut Ctx<'_>) -> Outcome {
+    overlay_latency_with(ctx, false)
+}
+
+/// S41 with `--no-dashboard`: the app starts in the tray and waits 16 s after each lock, so each
+/// overlay is built with no webview open (ADR 0016: the first lock with no webview starts WebView2
+/// cold). Same 2 s budget.
+fn overlay_latency_no_dashboard(ctx: &mut Ctx<'_>) -> Outcome {
+    overlay_latency_with(ctx, true)
+}
+
+fn overlay_latency_with(ctx: &mut Ctx<'_>, no_dashboard: bool) -> Outcome {
     let exe = match app_exe() {
         Ok(exe) => exe,
         Err(skip) => return skip,
     };
     let observer = ctx.observer;
+    let limit = Duration::from_secs(if no_dashboard { 300 } else { 120 });
     let result = (|| -> Result<String, String> {
         let repeat = LATENCY_LOCKS.to_string();
-        let mut app = start_app_with(
-            &exe,
-            Some(1),
-            &[("KEYCLEAN_E2E_AUTOLOCK_REPEAT", repeat.as_str())],
-            "S41",
-        )?;
-        let pid = app.0.id();
+        let mut env = vec![("KEYCLEAN_E2E_AUTOLOCK_REPEAT", repeat.as_str())];
+        if no_dashboard {
+            env.extend([
+                (NO_DASHBOARD, "1"),
+                // Longer than WebView2 may take to exit once its last webview closes (S43 allows
+                // 15 s), so each lock starts it cold.
+                ("KEYCLEAN_E2E_AUTOLOCK_GAP_MS", "16000"),
+            ]);
+        }
+        let mut app = start_app_with(&exe, Some(1), &env, "S41")?;
         // Each attempt ends in a session end or a failed autolock (which includes an overlay
         // that didn't confirm).
         let attempts = |log: &str| {
             log.matches("session ended:").count() + log.matches("autolock failed").count()
         };
         let mut log = String::new();
-        let finished = wait_until(Duration::from_secs(120), || {
+        let finished = wait_until(limit, || {
             log = app_log("S41");
-            attempts(&log) >= LATENCY_LOCKS
-        });
-        system::request_close(pid, APP_WINDOW_CLASS);
-        let exited = wait_exit(&mut app.0, Duration::from_secs(10));
+            // The autolock gives up when a lock doesn't end; nothing more will come then.
+            attempts(&log) >= LATENCY_LOCKS || log.contains("e2e autolock stopped")
+        }) && attempts(&log) >= LATENCY_LOCKS;
+        let quit = quit_app(&mut app.0, Duration::from_secs(10));
         let confirmed: Vec<u64> = log.lines().filter_map(|l| ms_after(l, CONFIRMED)).collect();
         let failed = log.matches("autolock failed").count();
         if !finished {
             return Err(format!(
-                "only {} of {LATENCY_LOCKS} locks finished within 120 s; confirmed {confirmed:?} \
+                "only {} of {LATENCY_LOCKS} locks finished within {} s; confirmed {confirmed:?} \
                  ms; log: e2e-S41-app.log",
-                attempts(&log)
+                attempts(&log),
+                limit.as_secs()
             ));
         }
         if confirmed.len() < LATENCY_LOCKS || failed > 0 {
@@ -2854,9 +2967,7 @@ fn overlay_latency(ctx: &mut Ctx<'_>) -> Outcome {
                  ms"
             ));
         }
-        if !exited {
-            return Err("the app didn't exit within 10 s of its windows closing".into());
-        }
+        quit?;
         expect_no_keyclean_left()?;
         expect_probes_pass(observer)?;
         expect_no_stuck_keys()?;
@@ -2868,14 +2979,237 @@ fn overlay_latency(ctx: &mut Ctx<'_>) -> Outcome {
             let rank = (p * warm.len() as f64).ceil() as usize;
             warm[rank.clamp(1, warm.len()) - 1]
         };
+        let (mode, first, rest) = if no_dashboard {
+            (
+                "measured with no webview open before each lock (no dashboard, 16 s after each \
+                 lock): ",
+                "first",
+                "next",
+            )
+        } else {
+            ("", "cold", "warm")
+        };
         Ok(format!(
-            "cold {cold} ms; warm ({} locks) p50 {} ms, p95 {} ms, max {} ms; all {confirmed:?} ms",
+            "{mode}{first} {cold} ms; {rest} ({} locks) p50 {} ms, p95 {} ms, max {} ms; all \
+             {confirmed:?} ms",
             warm.len(),
             pct(0.5),
             pct(0.95),
             warm[warm.len() - 1]
         ))
     })();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// M8: system tray and the window lifecycle (ADR 0016)
+// ---------------------------------------------------------------------------------------------
+
+/// App log line with the app process's own Raw Input registration count at startup.
+const APP_RAW_INPUT: &str = "app raw input registrations: ";
+
+/// S42: started in the tray (no dashboard), a 3 s autolock runs and ends by its timer. KeyClean
+/// must stay running with no visible window, its process must have registered no Raw Input
+/// (invariant 4; tao's registration removed), and `taskkill` must still quit it.
+fn tray_idle(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app_with(&exe, Some(3), &[(NO_DASHBOARD, "1")], "S42")?;
+        let pid = app.0.id();
+        wait_app_locked(ctx.observer, "S42", Duration::from_secs(20))?;
+        wait_input_back(ctx.observer, Duration::from_secs(8))?
+            .ok_or("input wasn't back within 8 s of a 3 s lock")?;
+        let (_, log) = wait_log("S42", "session ended:", Duration::from_secs(2));
+        if !log.contains("session ended: Timeout") {
+            return Err(format!(
+                "the lock didn't end by its timer ({}); log: e2e-S42-app.log",
+                ended_note(&log)
+            ));
+        }
+        sleep(Duration::from_secs(3));
+        expect_app_running(&mut app.0, "its lock ended with no dashboard open")?;
+        if has_visible_app_window(pid) {
+            return Err(
+                "a window was visible 3 s after a lock started from the tray ended (expected \
+                 none: the dashboard was closed when the lock was requested)"
+                    .into(),
+            );
+        }
+        let log = app_log("S42");
+        match ms_after(&log, APP_RAW_INPUT) {
+            Some(0) => {}
+            Some(n) => {
+                return Err(format!(
+                    "the app process registered {n} Raw Input device class(es) at startup \
+                     (expected 0, invariant 4); log: e2e-S42-app.log"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "the app log has no \"{APP_RAW_INPUT}N\" line; log: e2e-S42-app.log"
+                ));
+            }
+        }
+        let guard_line = log
+            .lines()
+            .find(|l| l.contains("close guard:"))
+            .unwrap_or("no close guard line")
+            .to_string();
+        let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+        let left = expect_no_keyclean_left()?;
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "3 s lock ended by its timer; app still running with no visible window 3 s later; \
+             app raw input registrations: 0; {guard_line}; taskkill exit after {} ms, no \
+             keyclean.exe left {} ms later",
+            exited.as_millis(),
+            left.as_millis()
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// How many `msedgewebview2.exe` processes process `pid` started: WebView2's browser process
+/// (its renderers and helpers are that process's children, not the app's). Asks PowerShell.
+fn webview_children(pid: u32) -> Result<usize, String> {
+    // No double quotes in the script: they would need escaping on the command line.
+    let script = format!(
+        "@(Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | Where-Object Name \
+         -eq 'msedgewebview2.exe').Count"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("couldn't run powershell: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.trim().parse().map_err(|_| {
+        format!(
+            "couldn't count the WebView2 processes (powershell printed {:?})",
+            text.trim()
+        )
+    })
+}
+
+/// S43: with the dashboard open the app has WebView2 running; closing the dashboard destroys its
+/// webview, so WebView2's processes must exit while KeyClean stays in the tray (ADR 0001, §30).
+fn dashboard_closed_no_webview(_ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app(&exe, None, "S43")?;
+        let pid = app.0.id();
+        let main = wait_main_window(pid, Duration::from_secs(20))
+            .ok_or("the dashboard didn't appear within 20 s; log: e2e-S43-app.log")?;
+        wait_responsive(pid, Duration::from_secs(10))
+            .ok_or("the dashboard didn't respond within 10 s")?;
+        let mut before = 0;
+        let mut count_error = None;
+        wait_until(Duration::from_secs(10), || match webview_children(pid) {
+            Ok(n) => {
+                before = n;
+                n >= 1
+            }
+            Err(e) => {
+                count_error = Some(e);
+                false
+            }
+        });
+        if before == 0 {
+            return Err(count_error.unwrap_or_else(|| {
+                "found no msedgewebview2.exe started by the app with the dashboard open, so the \
+                 check can't tell anything"
+                    .into()
+            }));
+        }
+        if !system::request_close_window(main) {
+            return Err("couldn't send the close to the main window".into());
+        }
+        let closed = Instant::now();
+        let window_gone = wait_until(Duration::from_secs(5), || !system::window_exists(main))
+            .then(|| closed.elapsed());
+        let mut after = before;
+        let mut count_error = None;
+        let webview_gone = wait_until(
+            Duration::from_secs(15).saturating_sub(closed.elapsed()),
+            || match webview_children(pid) {
+                Ok(n) => {
+                    after = n;
+                    n == 0
+                }
+                Err(e) => {
+                    count_error = Some(e);
+                    false
+                }
+            },
+        )
+        .then(|| closed.elapsed());
+        let detail = format!(
+            "{before} msedgewebview2.exe with the dashboard open; main window gone: {}; \
+             WebView2 gone: {}",
+            describe(window_gone, "NO (waited 5 s)"),
+            describe(webview_gone, "NO (waited 15 s)")
+        );
+        if webview_gone.is_none() {
+            let why = count_error.map_or(String::new(), |e| format!("; last count: {e}"));
+            return Err(format!(
+                "{detail}; {after} msedgewebview2.exe still running 15 s after the close{why}"
+            ));
+        }
+        if window_gone.is_none() {
+            return Err(detail);
+        }
+        expect_app_running(&mut app.0, "its dashboard was closed")?;
+        let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+        let left = expect_no_keyclean_left()?;
+        Ok(format!(
+            "{detail}; app kept running; taskkill exit after {} ms, no keyclean.exe left {} ms \
+             later",
+            exited.as_millis(),
+            left.as_millis()
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S44: at idle with the dashboard open, `taskkill` without `/F` may reach only the dashboard; its
+/// bare `WM_CLOSE` must exit the app instead of sending it to the tray (ADR 0016).
+fn taskkill_idle_dashboard(_ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app(&exe, None, "S44")?;
+        let pid = app.0.id();
+        wait_main_window(pid, Duration::from_secs(20))
+            .ok_or("the dashboard didn't appear within 20 s; log: e2e-S44-app.log")?;
+        let responsive = wait_responsive(pid, Duration::from_secs(10))
+            .ok_or("the dashboard didn't respond within 10 s")?;
+        let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+        let left = expect_no_keyclean_left()?;
+        Ok(format!(
+            "dashboard responding after {} ms; taskkill /PID (without /F) exit after {} ms, no \
+             keyclean.exe left {} ms later",
+            responsive.as_millis(),
+            exited.as_millis(),
+            left.as_millis()
+        ))
+    };
+    let result = run();
     crate::harness::release_watched_keys();
     sleep(WEBVIEW_SETTLE);
     result.into()

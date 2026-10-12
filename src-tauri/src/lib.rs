@@ -168,7 +168,9 @@ fn start_engine(app: &AppHandle) {
 ///
 /// `KEYCLEAN_E2E_AUTOLOCK_REPEAT=<n>` (1-20, default 1) locks `n` times in a row, each once the
 /// previous lock has ended and a second has passed, so the harness can measure the overlay with
-/// WebView2 already warm.
+/// WebView2 already warm. `KEYCLEAN_E2E_AUTOLOCK_GAP_MS=<ms>` (up to 30 000) waits longer after
+/// each lock ends; with no dashboard open, WebView2 then shuts down between locks, so each one
+/// starts it cold.
 #[cfg(debug_assertions)]
 fn e2e_autolock(app: &AppHandle) {
     let seconds = std::env::var("KEYCLEAN_E2E_AUTOLOCK")
@@ -178,6 +180,12 @@ fn e2e_autolock(app: &AppHandle) {
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .map_or(1, |n| n.clamp(1, 20));
+    let gap = std::env::var("KEYCLEAN_E2E_AUTOLOCK_GAP_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(Duration::from_secs(1), |ms| {
+            Duration::from_millis(ms.clamp(1_000, 30_000))
+        });
     let Some(seconds) = seconds else {
         return;
     };
@@ -200,7 +208,7 @@ fn e2e_autolock(app: &AppHandle) {
                     }
                     pause(Duration::from_millis(200)).await;
                 }
-                pause(Duration::from_secs(1)).await;
+                pause(gap).await;
             }
             if let Err(e) = overlay::lock(app.clone(), LockRequest::new(duration)).await {
                 eprintln!("[keyclean] e2e autolock failed: {}", e.details);
