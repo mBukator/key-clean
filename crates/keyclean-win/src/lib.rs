@@ -36,3 +36,4 @@ pub use engine::{
 pub use error::EngineError;
 pub use keyclean_core;
 pub use keyclean_core::session::{EndReason, SessionState, SystemTransition};
+pub use raw_input::registered_raw_input_count;

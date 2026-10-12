@@ -28,7 +28,7 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
 };
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, DeviceEventFilter, Emitter, Manager, RunEvent, State, WindowEvent};
 
 use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
@@ -388,7 +388,16 @@ pub fn run() {
         }))
         // Used from Rust only: no window is granted its commands (src-tauri/capabilities/).
         .plugin(tauri_plugin_store::Builder::new().build())
+        // tao registers the app for Raw Input from every mouse and keyboard by default, which
+        // would let the app see input while its window has focus. `Always` removes that
+        // registration (invariant 4; the engine process registers its own, during a lock only).
+        .device_event_filter(DeviceEventFilter::Always)
         .setup(|app| {
+            // Runs after the device event filter is applied. The harness checks it reads 0.
+            match keyclean_win::registered_raw_input_count() {
+                Some(n) => eprintln!("[keyclean] app raw input registrations: {n}"),
+                None => eprintln!("[keyclean] app raw input registrations: unknown"),
+            }
             // `setup` runs on the main thread, which owns the hidden helper windows.
             let handle = app.handle().clone();
             let guarded = keyclean_win::guard_helper_windows(move || handle.exit(0));
