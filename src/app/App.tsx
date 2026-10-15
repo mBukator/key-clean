@@ -11,7 +11,7 @@ import { CleanScreen } from "../ui/dashboard/CleanScreen";
 import { fitChoice, initialChoice, type DurationChoice } from "../ui/dashboard/choice";
 import { DevicesScreen } from "../ui/devices/DevicesScreen";
 import { SettingsScreen } from "../ui/settings/SettingsScreen";
-import { useDevices, useEngineStatus, useLockOptions } from "./useEngine";
+import { useDevices, useEngineStatus, useLockOptions, useShortcut } from "./useEngine";
 
 type TabId = "clean" | "devices" | "settings";
 
@@ -37,6 +37,7 @@ export function App() {
     const status = useEngineStatus(setRequestError);
     const devices = useDevices(setRequestError);
     const [options, setOptions] = useLockOptions(setRequestError);
+    const shortcut = useShortcut(setRequestError);
     const [tab, setTab] = useState<TabId>(initialTab);
     // null until the user changes them: the remembered choices from the options apply.
     const [choice, setChoice] = useState<DurationChoice | null>(null);
@@ -126,7 +127,13 @@ export function App() {
             </div>
         );
     } else if (tab === "settings") {
-        panel = <SettingsScreen options={options} onOptions={updateOptions} />;
+        panel = (
+            <SettingsScreen
+                options={options}
+                onOptions={updateOptions}
+                shortcut={shortcut}
+            />
+        );
     } else {
         const currentTargets = targets ?? options.lastTargets;
         panel = (
@@ -138,6 +145,7 @@ export function App() {
                 targets={currentTargets}
                 onTargets={setTargets}
                 touchpad={touchpad}
+                shortcut={shortcut}
                 pending={pending}
                 error={error}
                 onLock={(seconds) => {

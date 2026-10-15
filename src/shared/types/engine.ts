@@ -96,3 +96,20 @@ export const STATUS_EVENT = "engine-status";
 
 /** Name of the event the shell emits to the main window when the device list changes. */
 export const DEVICES_EVENT = "devices-changed";
+
+/** What the start shortcut does (§28). */
+export type ShortcutAction = "keyboard" | "selected";
+
+/** Mirrors `ShortcutDto` in src-tauri/src/shortcut.rs. */
+export interface ShortcutInfo {
+    /** The configured shortcut as key caps, such as ["Ctrl", "Shift", "K"]; empty when off. */
+    keys: string[];
+    action: ShortcutAction;
+    /** `capturing` while the user picks a new one; nothing is registered meanwhile. */
+    state: "off" | "active" | "unavailable" | "capturing";
+    /** Why it isn't registered, while `unavailable`. */
+    error: ErrorInfo | null;
+}
+
+/** Name of the event the shell emits to the main window when the start shortcut changes. */
+export const SHORTCUT_EVENT = "shortcut-changed";

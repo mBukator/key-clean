@@ -1,8 +1,9 @@
 import { Fragment } from "react";
 
 import { t, type StringKey } from "../../shared/localization/t";
-import type { LockTargets, SessionState } from "../../shared/types/engine";
+import type { LockTargets, SessionState, ShortcutInfo } from "../../shared/types/engine";
 import { MONO_FONT } from "../../shared/ui/font";
+import { shortcutLabel } from "../../shared/ui/shortcutKeys";
 import { formatCountdown } from "../../shared/ui/format";
 
 const LABEL_KEYS: Record<SessionState, StringKey[]> = {
@@ -21,10 +22,41 @@ interface StatusPanelProps {
     targets: LockTargets;
     /** Whether a touchpad is connected; its row is shown only then. */
     touchpad: boolean;
+    /** The start shortcut, shown under the emergency shortcut. */
+    shortcut: ShortcutInfo | null;
+}
+
+/** The start shortcut line: its keys, off, or not working. Hidden while picking a new one. */
+function ShortcutLine({ shortcut }: { shortcut: ShortcutInfo }) {
+    if (shortcut.state === "capturing") {
+        return null;
+    }
+    if (shortcut.state === "off") {
+        return <span className="text-panel-label">{t("clean.shortcutOff")}</span>;
+    }
+    if (shortcut.state === "unavailable") {
+        return (
+            <span className="text-panel-label normal-case">
+                {t("clean.shortcutUnavailable")}
+            </span>
+        );
+    }
+    return (
+        <>
+            <span className="text-panel-label">{t("clean.shortcut")}</span>
+            <span className="font-semibold">{shortcutLabel(shortcut.keys)}</span>
+        </>
+    );
 }
 
 /** The dark display: state, time, what gets locked, and the emergency shortcut (§18). */
-export function StatusPanel({ state, seconds, targets, touchpad }: StatusPanelProps) {
+export function StatusPanel({
+    state,
+    seconds,
+    targets,
+    touchpad,
+    shortcut,
+}: StatusPanelProps) {
     const rows: { label: StringKey; value: StringKey }[] = [
         { label: "tile.keyboard", value: targets.keyboard ? "panel.on" : "panel.off" },
         { label: "tile.mouse", value: targets.mouse ? "panel.on" : "panel.off" },
@@ -78,6 +110,11 @@ export function StatusPanel({ state, seconds, targets, touchpad }: StatusPanelPr
                     {KEYS.map((key) => t(key)).join(` ${t("overlay.key.plus")} `)}
                 </span>
             </p>
+            {shortcut && (
+                <p className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tracking-[0.12em] uppercase">
+                    <ShortcutLine shortcut={shortcut} />
+                </p>
+            )}
         </section>
     );
 }
