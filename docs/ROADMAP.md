@@ -450,9 +450,17 @@ Acceptance:
 
 ### M9 - Global shortcut
 
-Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
-(S1-S48) and `docs/testing/manual/M9.md`. Decisions: ADR 0017 (pending Max's OK on the points the
-plan didn't settle). Research: `docs/research/m9-shortcut.md`.
+Status: **code-complete - awaiting manual verification** (step 13 only). Verification:
+`cargo run -p keyclean-e2e` (S1-S48) and `docs/testing/manual/M9.md`. Decisions: ADR 0017 (amends
+ADR 0005). Research: `docs/research/m9-shortcut.md`.
+
+Harness, 2026-10-15: 43 passed, 0 failed in 299 s; S45-S48 passed, so Windows fires the hotkey for
+synthesized keys.
+
+Manual, 2026-10-15: steps 1-10 passed; step 12 (idle cost) skipped. Step 11 measured that typing
+into an administrator terminal gets through a keyboard lock and the engine's notice doesn't fire
+(M3 step 7's "blocked" didn't reproduce). Max chose a once-a-second foreground check during a
+lock that shows the warning on the overlay and in the dashboard; step 13 verifies it.
 
 Done in code:
 
@@ -466,7 +474,8 @@ Done in code:
 - [x] Settings → Shortcuts (capture, off, action, Try again, emergency shown), the Clean screen line
       and the tray hint (plain styling until Max's designs).
 - [x] Harness S45-S48; S42 expects 4 guarded helper windows.
-- [ ] Elevated-window measurement (M9.md step 11), then the ADR 0005 decision on the warning.
+- [x] Elevated-window measurement (M9.md step 11) and the ADR 0005 decision: a foreground check
+      once per countdown second during a keyboard lock; the overlay and the dashboard warn.
 - [ ] Settings → Shortcuts and Clean screen designs from Max.
 
 Scope: configurable start shortcut (§28) via the official global-shortcut plugin; keys held from the
@@ -475,8 +484,8 @@ here from M7 (ADR 0005 amendment).
 
 Acceptance:
 
-- [ ] Global shortcut starts a session
-- [ ] No stuck keys from the start shortcut
+- [x] Global shortcut starts a session (S45, steps 1-4)
+- [x] No stuck keys from the start shortcut (S45, S46, steps 1 and 9)
 
 ### M10 - Start with Windows and notifications
 

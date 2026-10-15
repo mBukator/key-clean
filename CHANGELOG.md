@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings → Shortcuts: change the shortcut by pressing the new one, turn it off, choose what it locks, and see the emergency shortcut. Shortcuts that would take keys other apps need (one modifier, Ctrl+Alt, the Windows key) are refused with a reason.
 - If another app holds the shortcut, KeyClean still starts; Settings says so and offers Try again, and it is retried whenever the dashboard opens.
 - The shortcut shows on the Clean screen and next to its item in the tray menu.
+- During a keyboard lock, the lock screen and the dashboard now say when an administrator window is in front, because typing there still gets through. KeyClean checks once per countdown second, only during a lock (ADR 0005, 0017).
 - Harness checks S45-S48 (shortcut lock, keys held through the lock start, a second press during a mouse-only lock, a shortcut another program holds), the M9 manual test, research note and ADR 0017.
 
 ### Changed

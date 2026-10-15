@@ -1,10 +1,11 @@
 # ADR 0017 - Global start shortcut
 
-- Status: Proposed. M9 plan approved by Max 2026-10-15 (D1-D10, all as recommended). Pending
-  Max's OK, because the plan didn't settle them: the exact shortcut rules (Shift plus Ctrl or Alt
-  only; Ctrl+Alt+Shift refused too), retrying on every dashboard open, the "unavailable" state
-  before the first registration attempt, the tray showing the shortcut after a tab, the debug-only
-  `KEYCLEAN_E2E_SHORTCUT` variables, and the elevated-window result (M9.md step 11).
+- Status: Accepted, 2026-10-15. M9 plan approved by Max (D1-D10, all as recommended); after the
+  M9 manual test Max accepted the points the plan didn't settle (the exact shortcut rules with
+  Ctrl+Alt+Shift refused too, retrying on every dashboard open, the "unavailable" state before
+  the first registration attempt, the tray showing the shortcut after a tab, the debug-only
+  `KEYCLEAN_E2E_SHORTCUT` variables) and chose the elevated-window warning below. The warning
+  awaits its manual check (M9.md step 13).
 - Deciders: Max
 - Related: M9; §12, §28, §30, §32 "Shortcuts", §46; invariants 3, 4, 8, 11; privacy invariants;
   ADR 0005 (elevated windows), 0007 (injected input), 0009 (engine process), 0014 (overlay gate),
@@ -105,11 +106,26 @@ keys the lock is about to block.
 
 ### Elevated window (ADR 0005)
 
-Measured in M9.md step 11 before any warning is built. If typing into an administrator window is
-blocked (as in M3) or the shortcut doesn't fire there, the engine's existing in-lock notices stay
-and no pre-lock warning is added. If typing gets through, the proposal is a line on the overlay,
-not a confirmation dialog, which would defeat the shortcut. "Relaunch as administrator" is
-deferred: ADR 0005 requires its own review against every invariant.
+Measured first (M9.md step 11, 2026-10-15): in a keyboard lock, letters typed into an
+administrator terminal appeared there, and the engine's in-lock notice didn't fire [tested]. The
+notice relies on the Raw Input sink seeing a key the hook missed (ADR 0010); Windows apparently
+keeps that input from both [assumption]. So the gap isn't limited to a shortcut press with an
+administrator window in front: clicking into one during a keyboard-only lock reaches it too.
+
+Decision (Max, 2026-10-15):
+
+- **During a lock, the app checks once per countdown second whether the window in front is
+  elevated** (the engine's existing `is_elevated_above_us`: the foreground window's process token,
+  and a process KeyClean can't open counts as elevated). It runs on the main thread with the
+  overlay check that already follows each countdown status, so nothing new runs at idle and no
+  hook or thread is added.
+- **If it is, and the keyboard is locked, the overlay and the dashboard show "Typing reaches
+  administrator windows during a lock."**, once per lock, through the existing notice. A
+  mouse-only lock doesn't warn: keys pass there anyway.
+- This covers a shortcut press with an administrator window in front (unless the overlay takes the
+  focus first) and clicking into one later. No confirmation dialog: it would defeat the shortcut.
+- "Relaunch as administrator" is deferred: ADR 0005 requires its own review against every
+  invariant.
 
 ### Logs
 
@@ -138,6 +154,8 @@ F-keys from their position. The modifier names shown come from the strings file.
 ## Consequences
 
 - At idle, KeyClean holds one hotkey registration; the app's hidden windows are four.
+- During a keyboard lock, typing into an administrator window still gets through (ADR 0005's known
+  fail-open case); the user is now told within about a second.
 - Ctrl+Shift+K stops reaching other apps while KeyClean runs (VS Code's delete line, Firefox's
   console). The user can change or turn it off.
 - A lock can now start with another app in front; the overlay takes the focus as for a tray lock.

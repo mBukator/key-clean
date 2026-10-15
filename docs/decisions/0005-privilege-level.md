@@ -1,6 +1,7 @@
 # ADR 0005 - Privilege level: run as the invoking user (asInvoker)
 
-- Status: Accepted, 2026-10-01. Amended in M7 (2026-10-08): the warning moves to M9.
+- Status: Accepted, 2026-10-01. Amended in M7 (2026-10-08): the warning moves to M9. Amended in
+  M9 (2026-10-15): measured again; the warning is a once-a-second check during a lock.
 - Deciders: Max
 - Related: `docs/research/phase-0-windows-input.md` (A4); fail-safe matrix "Elevated window focused";
   M1 step 11
@@ -55,3 +56,17 @@ M7 only shows the engine's existing in-lock notices (`notice.elevated_window`,
 found that typing into an admin window was **blocked** once the engine ran in its own process
 (ADR 0009). The fail-open case above may therefore be rarer than first assumed; M9 measures it again
 before deciding how prominent the warning must be.
+
+## Amendment (M9, 2026-10-15): measured again, and the warning
+
+M9.md step 11, with the engine in its own process: during a keyboard lock started by the global
+shortcut, letters typed into an administrator terminal on the other monitor appeared there, and
+the engine's in-lock notice didn't show [tested]. So M1 step 11's result holds and M3 step 7's
+"blocked" didn't reproduce; why M3 differed is unknown. The notice depends on Raw Input seeing the
+key the hook missed (ADR 0010), and Windows apparently hides that input from Raw Input too
+[assumption].
+
+Max chose (ADR 0017): during a lock the app checks once per countdown second whether the window in
+front is elevated, and if the keyboard is locked, the overlay and the dashboard say "Typing reaches
+administrator windows during a lock." No pre-lock dialog. "Relaunch as administrator" stays
+deferred; an elevated mode still needs its own review against every invariant.
