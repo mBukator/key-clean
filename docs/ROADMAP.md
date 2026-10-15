@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
-| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
-| M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
-| M8 System tray                                 | §55 Phase 4 | **done**                                    |
-| M9 Global shortcut                             | §55 Phase 4 | not started                                 |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                       |
+| ---------------------------------------------- | ----------- | -------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                     |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                     |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                     |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                     |
+| M4 Device detection                            | §52 Phase 1 | **done**                                     |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                     |
+| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                     |
+| M7 MVP dashboard                               | §54 Phase 3 | **done**                                     |
+| M8 System tray                                 | §55 Phase 4 | **done**                                     |
+| M9 Global shortcut                             | §55 Phase 4 | code-complete - awaiting manual verification |
+| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                  |
+| M11 Packaging                                  | §55 Phase 4 | not started                                  |
+| M12 Open-source release                        | §56 Phase 5 | not started                                  |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                  |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                  |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable  |
 
 ---
 
@@ -450,7 +450,24 @@ Acceptance:
 
 ### M9 - Global shortcut
 
-Status: not started. Manual test: `docs/testing/manual/M9.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S1-S48) and `docs/testing/manual/M9.md`. Decisions: ADR 0017 (pending Max's OK on the points the
+plan didn't settle). Research: `docs/research/m9-shortcut.md`.
+
+Done in code:
+
+- [x] Start shortcut through `tauri-plugin-global-shortcut` (`RegisterHotKey`; no hook, no Raw
+      Input), default Ctrl+Shift+K, registered from `setup` so a taken chord never stops KeyClean.
+- [x] Shortcut lock through the overlay gate with the remembered duration; "Lock selected devices"
+      (default) or "Lock keyboard"; a press during a lock is refused quietly; a failed one opens the
+      dashboard.
+- [x] Shortcut rules in `keyclean-core` (Shift plus Ctrl or Alt; no Ctrl+Alt, Windows key or F12),
+      checked again by the command; settings `startShortcut` and `shortcutAction`.
+- [x] Settings → Shortcuts (capture, off, action, Try again, emergency shown), the Clean screen line
+      and the tray hint (plain styling until Max's designs).
+- [x] Harness S45-S48; S42 expects 4 guarded helper windows.
+- [ ] Elevated-window measurement (M9.md step 11), then the ADR 0005 decision on the warning.
+- [ ] Settings → Shortcuts and Clean screen designs from Max.
 
 Scope: configurable start shortcut (§28) via the official global-shortcut plugin; keys held from the
 shortcut leave nothing stuck (invariant 8); the elevated-window warning before a shortcut lock, moved
