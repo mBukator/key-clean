@@ -41,9 +41,10 @@ use harness::EngineRig;
 use report::Report;
 use scenarios::{Ctx, Outcome};
 
-/// The outside watchdog's limit on the whole run. The default run takes about 8.5 minutes (the
+/// The outside watchdog's limit on the whole run. The default run takes about 10 minutes (the
 /// M5 mouse checks add about 40 s, the M6 overlay checks S34-S40 about 100 s: seven app launches
-/// of 10-17 s each, settle time included; the M8 checks S42-S44 and the longer S11 about 80 s);
+/// of 10-17 s each, settle time included; the M8 checks S42-S44 and the longer S11 about 80 s;
+/// the M9 checks S45-S48 about 100 s, three of them waiting out a 15 s dev-capped lock);
 /// `--overlay-latency` adds about 45 s, `--no-dashboard` about 3.5 minutes.
 const RUN_LIMIT: Duration = Duration::from_secs(900);
 
@@ -295,7 +296,8 @@ fn run(options: &Options) -> i32 {
                 } else if options.skip_app
                     && [
                         "S10", "S11", "S12", "S15", "S21", "S23", "S34", "S35", "S36", "S37",
-                        "S38", "S39", "S40", "S41", "S42", "S43", "S44",
+                        "S38", "S39", "S40", "S41", "S42", "S43", "S44", "S45", "S46", "S47",
+                        "S48",
                     ]
                     .contains(&id.as_str())
                 {

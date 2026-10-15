@@ -10,12 +10,14 @@
 //!   typing is never looked at, and a person's mouse events are only counted by kind;
 //! - [`held`] reports which keys and mouse buttons Windows believes are down (the stuck check);
 //! - [`system`] has process-window, workstation-lock and Raw Input registration helpers;
+//! - [`hotkey`] holds a global hotkey the way another app would (the start shortcut taken);
 //! - [`stall_next_callback`], [`raw_input_seen`], [`raw_mouse_seen`] and [`liveness_misses`]
 //!   drive and observe the hook-liveness check.
 //!
 //! Anything that uses this engages real input locks: run it by hand, never from `cargo test`.
 
 pub mod held;
+pub mod hotkey;
 pub mod inject;
 pub mod mouse;
 pub mod observer;
