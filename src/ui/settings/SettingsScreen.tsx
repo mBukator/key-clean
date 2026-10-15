@@ -2,17 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { useId, useState, type SyntheticEvent } from "react";
 
 import { t } from "../../shared/localization/t";
-import type { ErrorInfo, LockOptions } from "../../shared/types/engine";
+import type { ErrorInfo, LockOptions, ShortcutInfo } from "../../shared/types/engine";
 import { ErrorBlock, toErrorInfo } from "../../shared/ui/ErrorBlock";
 import { MONO_FONT } from "../../shared/ui/font";
+import { ShortcutSettings } from "./ShortcutSettings";
 
 interface SettingsScreenProps {
     options: LockOptions;
     onOptions: (options: LockOptions) => void;
+    shortcut: ShortcutInfo | null;
 }
 
-/** Settings (§32). M7 has only Safety → Maximum lock duration. */
-export function SettingsScreen({ options, onOptions }: SettingsScreenProps) {
+/** Settings (§32): Shortcuts (M9) and Safety → Maximum lock duration (M7). */
+export function SettingsScreen({ options, onOptions, shortcut }: SettingsScreenProps) {
     const inputId = useId();
     const hintId = useId();
     const messageId = useId();
@@ -45,7 +47,8 @@ export function SettingsScreen({ options, onOptions }: SettingsScreenProps) {
     };
 
     return (
-        <div className="flex flex-col gap-4 px-4 py-5 sm:px-8 sm:py-6">
+        <div className="flex flex-col gap-6 px-4 py-5 sm:px-8 sm:py-6">
+            {shortcut && <ShortcutSettings shortcut={shortcut} />}
             <section className="flex flex-col gap-3">
                 <h2
                     style={MONO_FONT}

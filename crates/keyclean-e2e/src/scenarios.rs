@@ -1,4 +1,4 @@
-//! The automated M1-M8 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! The automated M1-M9 checks. Each maps to steps in docs/testing/manual/M1.md, or to
 //! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3". The M5 checks (mouse
 //! and touchpad lock, ADR 0013) are marked "M5", the M6 checks (full-screen overlay, ADR 0014)
 //! "M6", the M8 checks (system tray and window lifecycle, ADR 0016) "M8".
@@ -14,6 +14,7 @@ use std::sync::{Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use keyclean_win::keyclean_core::countdown;
+use keyclean_win::testkit::hotkey::HeldHotkey;
 use keyclean_win::testkit::inject::{Stroke, vk};
 use keyclean_win::testkit::mouse::{self, Button, MouseInput};
 use keyclean_win::testkit::observer::{MouseKind, Observer};
@@ -303,6 +304,30 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
                 steps: "M8",
                 name: "taskkill at idle with the dashboard open exits",
                 run: taskkill_idle_dashboard,
+            },
+            Scenario {
+                id: "S45",
+                steps: "M9",
+                name: "The start shortcut locks; its keys, released during the overlay, don't stick",
+                run: shortcut_lock,
+            },
+            Scenario {
+                id: "S46",
+                steps: "M9",
+                name: "The start shortcut held through the lock start leaves nothing stuck",
+                run: shortcut_held,
+            },
+            Scenario {
+                id: "S47",
+                steps: "M9",
+                name: "A second shortcut press during a mouse-only lock starts no second lock",
+                run: shortcut_second_press,
+            },
+            Scenario {
+                id: "S48",
+                steps: "M9",
+                name: "A start shortcut another program holds doesn't stop KeyClean",
+                run: shortcut_taken,
             },
         ]);
     }
@@ -843,6 +868,8 @@ fn start_app_with(
         "KEYCLEAN_E2E_AUTOLOCK_GAP_MS",
         "KEYCLEAN_E2E_OVERLAY",
         NO_DASHBOARD,
+        SHORTCUT_ENV,
+        SHORTCUT_TARGETS_ENV,
     ] {
         cmd.env_remove(name);
     }
@@ -870,9 +897,9 @@ const APP_WINDOW_CLASS: &str = "Tauri Window";
 /// Debug-only app variable: start without the dashboard, as KeyClean in the tray (ADR 0016).
 const NO_DASHBOARD: &str = "KEYCLEAN_E2E_NO_DASHBOARD";
 
-/// Hidden windows the app's close guard subclasses since M8: tao's event target, the
-/// single-instance window and the tray icon's window.
-const TRAY_GUARDED_WINDOWS: usize = 3;
+/// Hidden windows the app's close guard subclasses: tao's event target, the single-instance
+/// window, the tray icon's window (M8) and the global-shortcut plugin's window (M9).
+const TRAY_GUARDED_WINDOWS: usize = 4;
 
 /// Quits the app with `taskkill /PID <pid>` without `/F` (`WM_CLOSE` to its windows, which the
 /// app's close guard turns into an exit; ADR 0016) and waits up to `timeout` for it to exit.
@@ -3098,8 +3125,8 @@ fn tray_idle(ctx: &mut Ctx<'_>) -> Outcome {
             .unwrap_or("no close guard line")
             .to_string();
         // tao's event target and the single-instance window (2 before M8, in every M7 harness
-        // log), plus the tray icon's hidden window. taskkill may reach only one window, so a
-        // clean exit alone doesn't prove the tray's is guarded.
+        // log), plus the tray icon's and the global-shortcut plugin's hidden windows. taskkill
+        // may reach only one window, so a clean exit alone doesn't prove each is guarded.
         let guarded = guard_line
             .split("close guard: ")
             .nth(1)
@@ -3109,8 +3136,8 @@ fn tray_idle(ctx: &mut Ctx<'_>) -> Outcome {
             let _ = quit_app(&mut app.0, Duration::from_secs(10));
             return Err(format!(
                 "expected the close guard to cover {TRAY_GUARDED_WINDOWS} helper windows \
-                 (tao, single instance, tray), the log says \"{guard_line}\"; log: \
-                 e2e-S42-app.log"
+                 (tao, single instance, tray, global shortcut), the log says \"{guard_line}\"; \
+                 log: e2e-S42-app.log"
             ));
         }
         let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
@@ -3265,6 +3292,315 @@ fn taskkill_idle_dashboard(_ctx: &mut Ctx<'_>) -> Outcome {
     };
     let result = run();
     crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// M9: the start shortcut (ADR 0017)
+// ---------------------------------------------------------------------------------------------
+
+/// Debug-only app variable: the start shortcut to register instead of the settings file's.
+const SHORTCUT_ENV: &str = "KEYCLEAN_E2E_SHORTCUT";
+
+/// Debug-only app variable: what the start shortcut locks (`keyboard`, `mouse` or `all`).
+const SHORTCUT_TARGETS_ENV: &str = "KEYCLEAN_E2E_SHORTCUT_TARGETS";
+
+/// The shortcut the M9 scenarios use: the default (§28).
+const SHORTCUT_KEYS: [u8; 3] = [vk::LCONTROL, vk::LSHIFT, vk::K];
+
+/// App log lines about the start shortcut. They never name its keys (privacy invariants).
+const SHORTCUT_REGISTERED: &str = "shortcut: registered";
+const SHORTCUT_UNAVAILABLE: &str = "shortcut: unavailable";
+const SHORTCUT_PRESSED: &str = "shortcut: lock requested";
+
+/// A shortcut lock lasts the remembered duration, which debug builds cap at 15 s.
+const SHORTCUT_LOCK_WAIT: Duration = Duration::from_secs(25);
+
+/// Starts the app in the tray with Ctrl+Shift+K as its start shortcut, locking `targets`, and
+/// waits until the shortcut is registered.
+fn start_shortcut_app(exe: &PathBuf, id: &str, targets: &str) -> Result<Guard, String> {
+    let app = start_app_with(
+        exe,
+        None,
+        &[
+            (NO_DASHBOARD, "1"),
+            (SHORTCUT_ENV, "Ctrl+Shift+K"),
+            (SHORTCUT_TARGETS_ENV, targets),
+        ],
+        id,
+    )?;
+    let mut log = String::new();
+    wait_until(Duration::from_secs(15), || {
+        log = app_log(id);
+        log.contains(SHORTCUT_REGISTERED) || log.contains(SHORTCUT_UNAVAILABLE)
+    });
+    if log.contains(SHORTCUT_REGISTERED) {
+        Ok(app)
+    } else if log.contains(SHORTCUT_UNAVAILABLE) {
+        Err(format!(
+            "the app couldn't register Ctrl+Shift+K (another program may hold it); log: \
+             e2e-{id}-app.log"
+        ))
+    } else {
+        Err(format!(
+            "the app didn't log its start shortcut within 15 s; log: e2e-{id}-app.log"
+        ))
+    }
+}
+
+/// Presses and releases Ctrl+Shift+K.
+fn tap_shortcut() -> Result<(), String> {
+    let mut strokes: Vec<Stroke> = SHORTCUT_KEYS.iter().map(|&k| Stroke::down(k)).collect();
+    strokes.extend(SHORTCUT_KEYS.iter().rev().map(|&k| Stroke::up(k)));
+    send(&strokes)
+}
+
+/// How many times the app logged `needle`.
+fn log_count(id: &str, needle: &str) -> usize {
+    app_log(id).matches(needle).count()
+}
+
+/// Waits until the app has logged `count` shortcut presses. If it hasn't, the shortcut never
+/// fired: `RegisterHotKey` may not act on `SendInput` keys [assumption], so the manual test
+/// covers it then.
+fn expect_shortcut_seen(id: &str, count: usize) -> Result<(), String> {
+    if wait_until(Duration::from_secs(3), || {
+        log_count(id, SHORTCUT_PRESSED) >= count
+    }) {
+        Ok(())
+    } else {
+        Err(format!(
+            "shortcut not seen: the app logged {} of {count} expected presses within 3 s \
+             (Windows may not fire a hotkey for synthesized keys; M9.md covers it by hand); \
+             log: e2e-{id}-app.log",
+            log_count(id, SHORTCUT_PRESSED)
+        ))
+    }
+}
+
+/// Waits for the shortcut lock to end and checks it ended by its timer.
+fn expect_shortcut_lock_timeout(id: &str) -> Result<(), String> {
+    let (ended, log) = wait_log(id, "session ended:", SHORTCUT_LOCK_WAIT);
+    if !ended {
+        return Err(format!(
+            "the lock didn't end within {} s; log: e2e-{id}-app.log",
+            SHORTCUT_LOCK_WAIT.as_secs()
+        ));
+    }
+    if log.contains("session ended: Timeout") {
+        Ok(())
+    } else {
+        Err(format!(
+            "the lock didn't end by its timer ({}); log: e2e-{id}-app.log",
+            ended_note(&log)
+        ))
+    }
+}
+
+/// Quits the app with taskkill and checks nothing is left running or held.
+fn finish_shortcut_app(app: &mut Guard, observer: &Observer) -> Result<String, String> {
+    let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+    let left = expect_no_keyclean_left()?;
+    expect_probes_pass(observer)?;
+    expect_no_stuck_keys()?;
+    Ok(format!(
+        "taskkill exit after {} ms, no keyclean.exe left {} ms later",
+        exited.as_millis(),
+        left.as_millis()
+    ))
+}
+
+/// S45: with KeyClean in the tray, Ctrl+Shift+K (pressed and released at once, so released while
+/// the overlay opens) starts a keyboard lock through the overlay. The lock blocks probes and ends
+/// by its timer; no key is left held, and no window is left open (ADR 0017, invariant 8).
+fn shortcut_lock(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_shortcut_app(&exe, "S45", "keyboard")?;
+        let pid = app.0.id();
+        tap_shortcut()?;
+        expect_shortcut_seen("S45", 1)?;
+        wait_app_locked(ctx.observer, "S45", Duration::from_secs(10))?;
+        expect_no_stuck_keys()?;
+        expect_shortcut_lock_timeout("S45")?;
+        wait_input_back(ctx.observer, Duration::from_secs(5))?
+            .ok_or("input wasn't back within 5 s of the lock's end")?;
+        expect_no_stuck_keys()?;
+        sleep(Duration::from_secs(2));
+        if has_visible_app_window(pid) {
+            return Err(
+                "a window was visible after a shortcut lock ended (expected none: it started \
+                 with no window open)"
+                    .into(),
+            );
+        }
+        let finished = finish_shortcut_app(&mut app, ctx.observer)?;
+        Ok(format!(
+            "Ctrl+Shift+K locked through the overlay, the lock ended by its timer, nothing \
+             stuck, no window left; {finished}"
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S46: Ctrl+Shift+K held down until the lock is on. Repeats of K stay blocked, the releases of
+/// all three keys pass, and nothing is stuck once the lock ends by its timer (invariant 8).
+fn shortcut_held(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_shortcut_app(&exe, "S46", "keyboard")?;
+        send(&SHORTCUT_KEYS.map(Stroke::down))?;
+        expect_shortcut_seen("S46", 1)?;
+        wait_app_locked(ctx.observer, "S46", Duration::from_secs(10))?;
+        ctx.observer.reset();
+        for _ in 0..5 {
+            send(&[Stroke::down(vk::K)])?; // auto-repeat while locked
+            sleep(Duration::from_millis(33));
+        }
+        sleep(PROBE_WINDOW);
+        if ctx.observer.downs(vk::K) > 0 {
+            return Err("repeats of the held shortcut key got through the lock".into());
+        }
+        send(&SHORTCUT_KEYS.map(Stroke::up))?;
+        if !wait_until(PROBE_WINDOW, || {
+            SHORTCUT_KEYS.iter().all(|&k| ctx.observer.ups(k) > 0)
+        }) {
+            return Err(format!(
+                "releases of the shortcut keys were blocked (stuck now: {})",
+                crate::harness::stuck_keys().join(", ")
+            ));
+        }
+        expect_no_stuck_keys()?;
+        expect_shortcut_lock_timeout("S46")?;
+        let finished = finish_shortcut_app(&mut app, ctx.observer)?;
+        Ok(format!(
+            "held through the lock start: repeats blocked, releases passed, nothing stuck; \
+             {finished}"
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S47: in a mouse-only shortcut lock keys pass, so a second Ctrl+Shift+K reaches KeyClean. It
+/// must start nothing: one overlay, one session, ended by its timer, and no dashboard opened
+/// (the refusal isn't an error to show; ADR 0017).
+fn shortcut_second_press(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_shortcut_app(&exe, "S47", "mouse")?;
+        let pid = app.0.id();
+        tap_shortcut()?;
+        expect_shortcut_seen("S47", 1)?;
+        let (confirmed, _) = wait_log("S47", CONFIRMED, Duration::from_secs(10));
+        if !confirmed {
+            return Err(
+                "the overlay of the mouse-only lock didn't confirm within 10 s; log: \
+                 e2e-S47-app.log"
+                    .into(),
+            );
+        }
+        sleep(Duration::from_secs(1));
+        tap_shortcut()?;
+        expect_shortcut_seen("S47", 2)?;
+        sleep(Duration::from_secs(1));
+        let overlays = log_count("S47", CONFIRMED);
+        if overlays != 1 {
+            return Err(format!(
+                "{overlays} overlays confirmed after two presses (expected 1); log: \
+                 e2e-S47-app.log"
+            ));
+        }
+        expect_shortcut_lock_timeout("S47")?;
+        sleep(Duration::from_secs(2));
+        let sessions = log_count("S47", "session ended:");
+        if sessions != 1 {
+            return Err(format!(
+                "{sessions} sessions ended (expected 1); log: e2e-S47-app.log"
+            ));
+        }
+        if has_visible_app_window(pid) {
+            return Err(
+                "a window was visible after the lock ended: the refused second press opened \
+                 the dashboard"
+                    .into(),
+            );
+        }
+        let finished = finish_shortcut_app(&mut app, ctx.observer)?;
+        Ok(format!(
+            "second press during a mouse-only lock seen and refused: 1 overlay, 1 session \
+             ended by its timer, no window; {finished}"
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S48: the harness holds Ctrl+Shift+K first, as another program would. KeyClean must still
+/// start, log the shortcut as unavailable, keep running, and quit cleanly (ADR 0017).
+fn shortcut_taken(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let held = match HeldHotkey::ctrl_shift(vk::K) {
+        Ok(held) => held,
+        Err(e) => {
+            return Outcome::Skip(format!(
+                "the harness couldn't hold Ctrl+Shift+K itself ({e}); another program holds it"
+            ));
+        }
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app_with(
+            &exe,
+            None,
+            &[(NO_DASHBOARD, "1"), (SHORTCUT_ENV, "Ctrl+Shift+K")],
+            "S48",
+        )?;
+        let mut log = String::new();
+        wait_until(Duration::from_secs(15), || {
+            log = app_log("S48");
+            log.contains(SHORTCUT_REGISTERED) || log.contains(SHORTCUT_UNAVAILABLE)
+        });
+        if log.contains(SHORTCUT_REGISTERED) {
+            return Err(
+                "the app reported its shortcut registered although the harness holds it; log: \
+                 e2e-S48-app.log"
+                    .into(),
+            );
+        }
+        if !log.contains(SHORTCUT_UNAVAILABLE) {
+            return Err(
+                "the app didn't log its start shortcut within 15 s; log: e2e-S48-app.log".into(),
+            );
+        }
+        sleep(Duration::from_secs(2));
+        expect_app_running(&mut app.0, "its start shortcut was taken")?;
+        let finished = finish_shortcut_app(&mut app, ctx.observer)?;
+        Ok(format!(
+            "shortcut taken: logged unavailable, app kept running; {finished}"
+        ))
+    };
+    let result = run();
+    drop(held);
     sleep(WEBVIEW_SETTLE);
     result.into()
 }

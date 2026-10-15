@@ -4,6 +4,7 @@ use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
 use keyclean_win::keyclean_core::settings::{
     DurationError, MAX_MAX_LOCK_MINUTES, MIN_DURATION, MIN_MAX_LOCK_MINUTES, Settings,
 };
+use keyclean_win::keyclean_core::shortcut::ShortcutError;
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
     DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, LockTargets,
@@ -49,6 +50,30 @@ impl ErrorDto {
     pub fn overlay_timeout(details: String) -> Self {
         ErrorDto {
             message_key: "error.overlay_timeout".to_owned(),
+            details,
+        }
+    }
+
+    /// The start shortcut breaks a rule (ADR 0017); the message says which.
+    pub fn shortcut_refused(why: ShortcutError) -> Self {
+        ErrorDto {
+            message_key: why.message_key().to_owned(),
+            details: format!("shortcut refused: {why}"),
+        }
+    }
+
+    /// The page asked for a shortcut action that doesn't exist.
+    pub fn shortcut_refused_action(action: &str) -> Self {
+        ErrorDto {
+            message_key: "shortcut.error.action".to_owned(),
+            details: format!("unknown shortcut action {action:?}"),
+        }
+    }
+
+    /// Windows didn't register the start shortcut, most likely because another app holds it.
+    pub fn shortcut_unavailable(details: String) -> Self {
+        ErrorDto {
+            message_key: "error.shortcut_unavailable".to_owned(),
             details,
         }
     }
@@ -111,6 +136,10 @@ pub struct StatusDto {
     /// setting), so the engine's `HardDeadline` end reads as `timeout` (ADR 0015).
     #[serde(skip)]
     session_meets_hard_deadline: bool,
+    /// Set once this lock has shown the app's elevated-window warning, so it isn't shown again
+    /// over a later notice. Cleared when the next lock starts.
+    #[serde(skip)]
+    elevated_warned: bool,
 }
 
 impl StatusDto {
@@ -127,6 +156,7 @@ impl StatusDto {
             targets: None,
             overlay_lost: false,
             session_meets_hard_deadline: false,
+            elevated_warned: false,
         }
     }
 
@@ -199,6 +229,27 @@ impl StatusDto {
         self.notice = Some("notice.engine_restarted");
     }
 
+    /// Whether this lock still needs to know if the window in front is elevated: the keyboard is
+    /// locked and the warning hasn't been shown yet. Keeps the check from running in a mouse-only
+    /// lock, where keys pass anyway, or after the warning.
+    pub fn elevated_check_due(&self) -> bool {
+        let locking = self.state == state_name(SessionState::Starting)
+            || self.state == state_name(SessionState::Locked);
+        locking && self.targets.is_some_and(|t| t.keyboard) && !self.elevated_warned
+    }
+
+    /// The window in front during a keyboard lock is elevated, so typing there gets past the hook
+    /// (M9.md step 11; ADR 0005, 0017). Shows the elevated-window notice once per lock, so a later
+    /// notice isn't overwritten. Returns whether the status changed.
+    pub fn elevated_window_in_front(&mut self) -> bool {
+        if !self.elevated_check_due() {
+            return false;
+        }
+        self.elevated_warned = true;
+        self.notice = Some(ELEVATED_NOTICE);
+        true
+    }
+
     /// Folds one engine event into the status. Only notices the user should see are kept.
     pub fn apply(&mut self, event: &EngineEvent) {
         match event {
@@ -212,6 +263,7 @@ impl StatusDto {
                 {
                     // A new lock starts: earlier notices no longer apply.
                     self.notice = None;
+                    self.elevated_warned = false;
                 }
                 if let Some(targets) = status.targets {
                     // Kept after the session ends, so its late errors and notices still read right.
@@ -359,10 +411,13 @@ fn state_name(state: SessionState) -> &'static str {
     }
 }
 
+/// Typing reaches administrator windows during a lock.
+const ELEVATED_NOTICE: &str = "notice.elevated_window";
+
 /// The string key for notices the user should see; the rest are only logged.
 fn notice_key(notice: EngineNotice) -> Option<&'static str> {
     match notice {
-        EngineNotice::ElevatedWindowBypass => Some("notice.elevated_window"),
+        EngineNotice::ElevatedWindowBypass => Some(ELEVATED_NOTICE),
         EngineNotice::ElevatedWindowMouseBypass => Some("notice.elevated_window_mouse"),
         EngineNotice::LivenessCheckUnavailable => Some("notice.liveness_unavailable"),
         EngineNotice::HookAlreadyRemoved
@@ -590,6 +645,47 @@ mod tests {
     }
 
     #[test]
+    fn an_elevated_window_in_front_warns_once_per_keyboard_lock() {
+        let mut dto = StatusDto::initial(true);
+        assert!(!dto.elevated_window_in_front(), "idle");
+        dto.apply(&status_targets(SessionState::Locked, Some(MOUSE_ONLY)));
+        assert!(
+            !dto.elevated_window_in_front(),
+            "keys pass in a mouse-only lock"
+        );
+        assert_eq!(dto.notice, None);
+
+        dto.apply(&status_targets(SessionState::Idle, None));
+        dto.apply(&status_targets(
+            SessionState::Locked,
+            Some(LockTargets::KEYBOARD),
+        ));
+        assert!(dto.elevated_window_in_front());
+        assert_eq!(dto.notice, Some("notice.elevated_window"));
+        assert!(!dto.elevated_window_in_front(), "only once");
+        assert!(!dto.elevated_check_due());
+
+        // A later notice isn't overwritten by the warning.
+        dto.apply(&EngineEvent::DeviceChanged(DeviceChange::Removed(
+            DeviceClass::Keyboard,
+        )));
+        assert!(!dto.elevated_window_in_front());
+        assert_eq!(dto.notice, Some("notice.keyboard_disconnected"));
+
+        dto.apply(&status_targets(SessionState::Unlocking, None));
+        assert!(!dto.elevated_window_in_front(), "not after the lock");
+
+        // The next lock warns again.
+        dto.apply(&status_targets(SessionState::Idle, None));
+        dto.apply(&status_targets(
+            SessionState::Locked,
+            Some(LockTargets::KEYBOARD),
+        ));
+        assert!(dto.elevated_check_due());
+        assert!(dto.elevated_window_in_front());
+    }
+
+    #[test]
     fn an_unlock_for_a_lost_overlay_reads_as_overlay_lost() {
         let mut dto = StatusDto::initial(true);
         dto.apply(&status(SessionState::Starting));
@@ -798,6 +894,35 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["messageKey"], "error.engine_stopped");
         assert!(json["details"].is_string());
+    }
+
+    #[test]
+    fn every_shortcut_error_has_a_ui_string() {
+        let strings: std::collections::HashMap<String, String> =
+            serde_json::from_str(include_str!("../../locales/en/strings.json")).unwrap();
+        let mut errors: Vec<ErrorDto> = [
+            ShortcutError::Unreadable,
+            ShortcutError::NoKey,
+            ShortcutError::TwoKeys,
+            ShortcutError::UnsupportedKey,
+            ShortcutError::ReservedKey,
+            ShortcutError::Emergency,
+            ShortcutError::CtrlAlt,
+            ShortcutError::Win,
+            ShortcutError::NeedsShift,
+        ]
+        .into_iter()
+        .map(ErrorDto::shortcut_refused)
+        .collect();
+        errors.push(ErrorDto::shortcut_refused_action("mouse"));
+        errors.push(ErrorDto::shortcut_unavailable(String::new()));
+        for error in errors {
+            assert!(
+                strings.contains_key(&error.message_key),
+                "missing {}",
+                error.message_key
+            );
+        }
     }
 
     #[test]

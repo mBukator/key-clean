@@ -5,6 +5,7 @@ import type {
     ErrorInfo,
     LockOptions,
     LockTargets,
+    ShortcutInfo,
 } from "../../shared/types/engine";
 import { ErrorBlock } from "../../shared/ui/ErrorBlock";
 import { parseChoice, type DurationChoice } from "./choice";
@@ -35,6 +36,7 @@ interface CleanScreenProps {
     onTargets: (targets: LockTargets) => void;
     /** Whether a touchpad is connected. */
     touchpad: boolean;
+    shortcut: ShortcutInfo | null;
     pending: boolean;
     error: ErrorInfo | null;
     onLock: (seconds: number) => void;
@@ -50,6 +52,7 @@ export function CleanScreen({
     targets,
     onTargets,
     touchpad,
+    shortcut,
     pending,
     error,
     onLock,
@@ -77,6 +80,7 @@ export function CleanScreen({
                 seconds={shownSeconds}
                 targets={shownTargets}
                 touchpad={touchpad}
+                shortcut={shortcut}
             />
 
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(9.5rem,11rem)]">

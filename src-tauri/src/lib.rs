@@ -13,6 +13,7 @@ mod devices;
 mod i18n;
 mod overlay;
 mod settings;
+mod shortcut;
 mod tray;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +35,7 @@ use bridge::{DevicesDto, ErrorDto, LockOptionsDto, STATUS_EVENT, StatusDto};
 use devices::DeviceStore;
 use overlay::OverlayState;
 use settings::SettingsState;
+use shortcut::ShortcutState;
 /// The dashboard's window label; its capability (`capabilities/main.json`) is keyed to it.
 const MAIN_WINDOW: &str = "main";
 /// How long exit waits for the relay to pass on the engine's last events.
@@ -128,6 +130,40 @@ fn get_status(store: State<'_, StatusStore>) -> StatusDto {
 #[tauri::command]
 fn list_devices(devices: State<'_, DeviceStore>) -> DevicesDto {
     devices.snapshot()
+}
+
+/// Where a lock with the remembered duration was asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockOrigin {
+    Tray,
+    Shortcut,
+}
+
+/// Locks `targets` for the remembered duration, through the overlay like every lock (invariant
+/// 11). Doesn't change the remembered choices: the tray item or the shortcut names what it locks
+/// (ADR 0016, 0017). A failure is stored in the shared status, so the tray and the dashboard show
+/// it. A shortcut lock that fails also opens the dashboard, because nothing else would show that
+/// the press did nothing (ADR 0017). A lock already starting or running isn't reported.
+pub(crate) fn lock_remembered(app: &AppHandle, targets: LockTargets, origin: LockOrigin) {
+    let settings = app.state::<SettingsState>().current();
+    let request = LockRequest {
+        duration: settings.last_duration(),
+        max_lock: settings.max_lock(),
+        targets,
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = overlay::lock(app.clone(), request).await {
+            eprintln!("[keyclean] {origin:?} lock failed: {}", e.details);
+            if e.is(&EngineError::AlreadyActive) {
+                return;
+            }
+            update_status(&app, |status| status.set_request_error(e));
+            if origin == LockOrigin::Shortcut && !is_exiting(&app) {
+                dashboard::open(&app);
+            }
+        }
+    });
 }
 
 fn start_engine(app: &AppHandle) {
@@ -431,6 +467,11 @@ pub fn run() {
         }))
         // Used from Rust only: no window is granted its commands (src-tauri/capabilities/).
         .plugin(tauri_plugin_store::Builder::new().build())
+        // The start shortcut (ADR 0017), registered from `setup` (`shortcut::start`) rather than
+        // with the plugin's builder, whose failed registration would stop the app from starting.
+        // Used from Rust only, like the store. Its hidden window exists before `setup` runs, so
+        // the close guard covers it.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // tao registers the app for Raw Input from every mouse and keyboard by default, which
         // would let the app see input while its window has focus. `Always` removes that
         // registration (invariant 4; the engine process registers its own, during a lock only).
@@ -445,6 +486,7 @@ pub fn run() {
             app.manage(OverlayState::new());
             app.manage(dashboard::Building::new());
             app.manage(KeepInTray(AtomicBool::new(false)));
+            app.manage(ShortcutState::new());
             start_engine(app.handle());
             devices::start(app.handle());
             // Without a tray icon there would be no way back once the dashboard closes, so
@@ -459,6 +501,9 @@ pub fn run() {
             let handle = app.handle().clone();
             let guarded = keyclean_win::guard_helper_windows(move || exit_app(&handle));
             eprintln!("[keyclean] close guard: {guarded} helper windows");
+            // Registers once the event loop runs; a shortcut another app holds is shown, not
+            // fatal.
+            shortcut::start(app.handle());
             // A manual launch opens the dashboard (start minimized is M10, §29).
             if !start_without_dashboard() {
                 dashboard::open(app.handle());
@@ -474,7 +519,13 @@ pub fn run() {
             list_devices,
             overlay::get_overlay_session,
             overlay::overlay_ready,
-            overlay::overlay_tick
+            overlay::overlay_tick,
+            shortcut::get_shortcut,
+            shortcut::set_shortcut,
+            shortcut::set_shortcut_action,
+            shortcut::begin_shortcut_capture,
+            shortcut::end_shortcut_capture,
+            shortcut::retry_shortcut
         ])
         .build(tauri::generate_context!());
 
@@ -486,6 +537,12 @@ pub fn run() {
                 event: WindowEvent::Focused(true),
                 ..
             } if label == MAIN_WINDOW => dashboard::guard_close(),
+            // A shortcut capture the dashboard left open puts the shortcut back.
+            RunEvent::WindowEvent {
+                label,
+                event: WindowEvent::Destroyed,
+                ..
+            } if label == MAIN_WINDOW => shortcut::dashboard_closed(handle),
             // The last window closed (the dashboard, or the overlay with the dashboard closed).
             // With a tray icon KeyClean stays running there; Quit, the close guard and an
             // overlay close request exit with a code, which this doesn't prevent.
@@ -583,6 +640,12 @@ mod tests {
             "allow-list-devices",
             "allow-get-lock-options",
             "allow-set-max-lock",
+            "allow-get-shortcut",
+            "allow-set-shortcut",
+            "allow-set-shortcut-action",
+            "allow-begin-shortcut-capture",
+            "allow-end-shortcut-capture",
+            "allow-retry-shortcut",
         ] {
             assert!(!overlay.iter().any(|p| p == denied), "overlay has {denied}");
         }
@@ -599,9 +662,10 @@ mod tests {
         }
     }
 
-    /// The settings file belongs to Rust: no window may call the store plugin (ADR 0015).
+    /// The settings file and the start shortcut belong to Rust: no window may call the store or
+    /// global-shortcut plugins (ADR 0015, 0017).
     #[test]
-    fn no_window_can_use_the_store_plugin() {
+    fn no_window_can_use_the_store_or_shortcut_plugins() {
         for capability in [
             include_str!("../capabilities/main.json"),
             include_str!("../capabilities/overlay.json"),
@@ -613,6 +677,7 @@ mod tests {
                     .or_else(|| permission["identifier"].as_str())
                     .unwrap_or_default();
                 assert!(!name.starts_with("store:"), "{name}");
+                assert!(!name.starts_with("global-shortcut:"), "{name}");
             }
         }
     }

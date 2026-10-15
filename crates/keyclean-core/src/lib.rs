@@ -16,4 +16,5 @@ pub mod presets;
 pub mod restart;
 pub mod session;
 pub mod settings;
+pub mod shortcut;
 pub mod time;

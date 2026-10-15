@@ -35,6 +35,7 @@ pub use engine::{
     LockTargets, safety_profile,
 };
 pub use error::EngineError;
+pub use foreground::is_elevated_above_us;
 pub use keyclean_core;
 pub use keyclean_core::session::{EndReason, SessionState, SystemTransition};
 pub use raw_input::registered_raw_input_count;

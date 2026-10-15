@@ -1,13 +1,14 @@
 //! User settings (§32) and the lock duration range (ADR 0015). Pure: the app reads and writes the
 //! settings file and hands the stored values to [`Settings::from_stored`], which never fails.
 //!
-//! Nothing about a running lock is stored here (invariant 9): only the maximum lock duration and the
-//! choices of the last lock that started.
+//! Nothing about a running lock is stored here (invariant 9): only the maximum lock duration, the
+//! choices of the last lock that started, and the start shortcut with what it locks (ADR 0017).
 
 use std::time::Duration;
 
 use crate::policy::{ABSOLUTE_MAX_LOCK, DEFAULT_MAX_LOCK, LockTargets};
 use crate::presets::DEFAULT_DURATION;
+use crate::shortcut::{DEFAULT_SHORTCUT, Shortcut, ShortcutAction};
 
 /// The shortest lock a user can ask for (the Custom field's lower bound).
 pub const MIN_DURATION: Duration = Duration::from_secs(10);
@@ -65,7 +66,15 @@ pub fn clamp_max_lock_minutes(minutes: u64) -> u64 {
     minutes.clamp(MIN_MAX_LOCK_MINUTES, MAX_MAX_LOCK_MINUTES)
 }
 
-/// The values as read from the settings file. Each is `None` when missing or of the wrong type.
+/// The start shortcut as stored: off (`null` in the file) or a chord.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoredShortcut {
+    Off,
+    On(Shortcut),
+}
+
+/// The values as read from the settings file. Each is `None` when missing or of the wrong type
+/// (for the shortcut, also when it breaks the shortcut rules).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoredSettings {
     /// Maximum lock duration, in minutes.
@@ -76,6 +85,10 @@ pub struct StoredSettings {
     pub last_keyboard: Option<bool>,
     /// Whether the last lock that started blocked the mouse and touchpad.
     pub last_mouse: Option<bool>,
+    /// The start shortcut, or off.
+    pub start_shortcut: Option<StoredShortcut>,
+    /// What the start shortcut locks.
+    pub shortcut_action: Option<ShortcutAction>,
 }
 
 /// Settings in effect, always within their ranges.
@@ -84,6 +97,8 @@ pub struct Settings {
     max_lock_minutes: u64,
     last_duration: Duration,
     last_targets: LockTargets,
+    start_shortcut: Option<Shortcut>,
+    shortcut_action: ShortcutAction,
 }
 
 impl Default for Settings {
@@ -92,13 +107,16 @@ impl Default for Settings {
             max_lock_minutes: DEFAULT_MAX_LOCK_MINUTES,
             last_duration: DEFAULT_DURATION,
             last_targets: LockTargets::KEYBOARD,
+            start_shortcut: Some(DEFAULT_SHORTCUT),
+            shortcut_action: ShortcutAction::default(),
         }
     }
 }
 
 impl Settings {
     /// Settings from stored values. Missing values take their defaults; out-of-range ones are
-    /// clamped; targets that block nothing fall back to the keyboard.
+    /// clamped; targets that block nothing fall back to the keyboard. A missing shortcut is the
+    /// default one (§28); a stored `Off` stays off.
     pub fn from_stored(stored: StoredSettings) -> Self {
         let max_lock_minutes = stored
             .max_lock_minutes
@@ -113,6 +131,12 @@ impl Settings {
                 .last_duration_secs
                 .map_or(DEFAULT_DURATION, Duration::from_secs),
             last_targets: targets.checked().unwrap_or(LockTargets::KEYBOARD),
+            start_shortcut: match stored.start_shortcut {
+                None => Some(DEFAULT_SHORTCUT),
+                Some(StoredShortcut::Off) => None,
+                Some(StoredShortcut::On(shortcut)) => Some(shortcut),
+            },
+            shortcut_action: stored.shortcut_action.unwrap_or_default(),
         };
         settings.fit_last_duration();
         settings
@@ -125,6 +149,11 @@ impl Settings {
             last_duration_secs: Some(self.last_duration.as_secs()),
             last_keyboard: Some(self.last_targets.keyboard),
             last_mouse: Some(self.last_targets.mouse),
+            start_shortcut: Some(
+                self.start_shortcut
+                    .map_or(StoredShortcut::Off, StoredShortcut::On),
+            ),
+            shortcut_action: Some(self.shortcut_action),
         }
     }
 
@@ -146,6 +175,34 @@ impl Settings {
     /// The targets to preselect: the last lock's, never empty.
     pub fn last_targets(&self) -> LockTargets {
         self.last_targets
+    }
+
+    /// The start shortcut, or `None` when it is off.
+    pub fn start_shortcut(&self) -> Option<Shortcut> {
+        self.start_shortcut
+    }
+
+    /// What the start shortcut locks.
+    pub fn shortcut_action(&self) -> ShortcutAction {
+        self.shortcut_action
+    }
+
+    /// The targets the start shortcut locks: the keyboard, or the remembered targets.
+    pub fn shortcut_targets(&self) -> LockTargets {
+        match self.shortcut_action {
+            ShortcutAction::Keyboard => LockTargets::KEYBOARD,
+            ShortcutAction::Selected => self.last_targets,
+        }
+    }
+
+    /// Changes the start shortcut; `None` turns it off.
+    pub fn set_start_shortcut(&mut self, shortcut: Option<Shortcut>) {
+        self.start_shortcut = shortcut;
+    }
+
+    /// Changes what the start shortcut locks.
+    pub fn set_shortcut_action(&mut self, action: ShortcutAction) {
+        self.shortcut_action = action;
     }
 
     /// Changes the maximum lock duration (clamped to its range). A remembered duration longer than
@@ -279,8 +336,15 @@ mod tests {
             last_duration_secs: Some(754),
             last_keyboard: Some(false),
             last_mouse: Some(true),
+            start_shortcut: Some(StoredShortcut::On(Shortcut::parse("Alt+Shift+3").unwrap())),
+            shortcut_action: Some(ShortcutAction::Keyboard),
         });
         assert_eq!(s.max_lock_minutes(), 45);
+        assert_eq!(
+            s.start_shortcut().map(|s| s.to_string()).as_deref(),
+            Some("Alt+Shift+3")
+        );
+        assert_eq!(s.shortcut_action(), ShortcutAction::Keyboard);
         assert_eq!(s.last_duration(), secs(754));
         assert_eq!(
             s.last_targets(),
@@ -400,6 +464,8 @@ mod tests {
             last_duration_secs: Some(4000),
             last_keyboard: Some(false),
             last_mouse: Some(false),
+            start_shortcut: None,
+            shortcut_action: None,
         });
         assert_eq!(
             s.to_stored(),
@@ -408,8 +474,35 @@ mod tests {
                 last_duration_secs: Some(60),
                 last_keyboard: Some(true),
                 last_mouse: Some(false),
+                start_shortcut: Some(StoredShortcut::On(DEFAULT_SHORTCUT)),
+                shortcut_action: Some(ShortcutAction::Selected),
             }
         );
+    }
+
+    #[test]
+    fn shortcut_defaults_to_ctrl_shift_k_locking_the_selected_devices() {
+        let s = Settings::default();
+        assert_eq!(s.start_shortcut(), Some(DEFAULT_SHORTCUT));
+        assert_eq!(s.shortcut_action(), ShortcutAction::Selected);
+    }
+
+    #[test]
+    fn a_shortcut_turned_off_stays_off() {
+        let mut s = Settings::default();
+        s.set_start_shortcut(None);
+        let stored = s.to_stored();
+        assert_eq!(stored.start_shortcut, Some(StoredShortcut::Off));
+        assert_eq!(Settings::from_stored(stored).start_shortcut(), None);
+    }
+
+    #[test]
+    fn shortcut_targets_follow_the_action() {
+        let mut s = Settings::default();
+        s.remember_lock(secs(60), LockTargets::ALL);
+        assert_eq!(s.shortcut_targets(), LockTargets::ALL);
+        s.set_shortcut_action(ShortcutAction::Keyboard);
+        assert_eq!(s.shortcut_targets(), LockTargets::KEYBOARD);
     }
 
     #[test]

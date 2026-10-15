@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A failed lock started from the tray shows in the tray, and the dashboard shows the error when opened; a lock that ends with an error or a lost lock screen opens the dashboard.
 - Harness checks S42-S44 (KeyClean stays in the tray with no window and quits cleanly, no WebView2 left after the dashboard closes, `taskkill` with the dashboard open), S41 `--no-dashboard`, the M8 manual test, research note and ADR 0016.
 
+- Start shortcut (M9): Ctrl+Shift+K starts a lock from any app, through the lock screen, with the remembered duration. It locks the selected devices or only the keyboard (Settings), and a press during a lock does nothing (ADR 0017).
+- Settings → Shortcuts: change the shortcut by pressing the new one, turn it off, choose what it locks, and see the emergency shortcut. Shortcuts that would take keys other apps need (one modifier, Ctrl+Alt, the Windows key) are refused with a reason.
+- If another app holds the shortcut, KeyClean still starts; Settings says so and offers Try again, and it is retried whenever the dashboard opens.
+- The shortcut shows on the Clean screen and next to its item in the tray menu.
+- During a keyboard lock, the lock screen and the dashboard now say when an administrator window is in front, because typing there still gets through. KeyClean checks once per countdown second, only during a lock (ADR 0005, 0017).
+- Harness checks S45-S48 (shortcut lock, keys held through the lock start, a second press during a mouse-only lock, a shortcut another program holds), the M9 manual test, research note and ADR 0017.
+
 ### Changed
 
 - Locking now waits for the overlay, so `lock_input` returns once the lock has been requested or the overlay failed.

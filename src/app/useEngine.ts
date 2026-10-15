@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 
 import {
     DEVICES_EVENT,
+    SHORTCUT_EVENT,
     STATUS_EVENT,
     type DevicesState,
     type EngineStatus,
     type ErrorInfo,
     type LockOptions,
+    type ShortcutInfo,
 } from "../shared/types/engine";
 import { toErrorInfo } from "../shared/ui/ErrorBlock";
 
@@ -66,6 +68,14 @@ export function useEngineStatus(
 /** The device list, kept current by `devices-changed` events. */
 export function useDevices(onError: (error: ErrorInfo) => void): DevicesState | null {
     return useSubscribed<DevicesState>(DEVICES_EVENT, "list_devices", onError);
+}
+
+/**
+ * The start shortcut, kept current by `shortcut-changed` events. Opening the dashboard tries
+ * again to register a shortcut that was unavailable (ADR 0017).
+ */
+export function useShortcut(onError: (error: ErrorInfo) => void): ShortcutInfo | null {
+    return useSubscribed<ShortcutInfo>(SHORTCUT_EVENT, "retry_shortcut", onError);
 }
 
 /** The lock options (presets, range, remembered choices), read once. */

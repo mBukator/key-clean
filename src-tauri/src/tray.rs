@@ -6,14 +6,16 @@
 //! setting change.
 //!
 //! The menu follows the engine status. It is rebuilt only when the status moves between idle and
-//! locked (or the engine becomes available or not); during a lock the status line and the tooltip
-//! show the countdown, updated on each countdown status. Nothing runs at idle.
+//! locked (or the engine becomes available or not), or the start shortcut changes; during a lock
+//! the status line and the tooltip show the countdown, updated on each countdown status. Nothing
+//! runs at idle.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use keyclean_win::LockTargets;
 use keyclean_win::keyclean_core::countdown::format_clock;
-use keyclean_win::{EngineError, LockRequest, LockTargets};
+use keyclean_win::keyclean_core::shortcut::ShortcutAction;
 use tauri::image::Image;
 use tauri::include_image;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -21,7 +23,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::settings::SettingsState;
-use crate::{EngineSlot, StatusStore, dashboard, guard, i18n, overlay, update_status};
+use crate::shortcut::{self, TrayHint};
+use crate::{
+    EngineSlot, LockOrigin, StatusStore, dashboard, guard, i18n, lock_remembered, overlay,
+};
 
 const TRAY_ID: &str = "keyclean";
 
@@ -166,6 +171,8 @@ struct Shown {
     mode: Option<TrayMode>,
     /// The menu showing.
     menu: MenuKind,
+    /// The start shortcut shown next to its item.
+    hint: Option<TrayHint>,
     /// The menu's status line, updated in place while the menu stays the same.
     status: MenuItem<Wry>,
     /// The taskbar theme and display scale, re-read when Windows reports a setting change.
@@ -203,7 +210,8 @@ fn tray_icon(app: &AppHandle) -> Option<TrayIcon> {
 /// Builds the tray icon. Runs in `setup`, on the main thread, before the close guard, so the
 /// guard also covers the tray's hidden window (ADR 0016).
 pub fn create(app: &AppHandle, mode: TrayMode) -> tauri::Result<()> {
-    let (menu, status) = build_menu(app, mode)?;
+    // The shortcut registers once the event loop runs, which updates the menu.
+    let (menu, status) = build_menu(app, mode, None)?;
     let light_taskbar = keyclean_win::taskbar_uses_light_theme();
     let scale = primary_scale(app);
     let look = Look::of(mode, light_taskbar, scale);
@@ -238,6 +246,7 @@ pub fn create(app: &AppHandle, mode: TrayMode) -> tauri::Result<()> {
         shown: Mutex::new(Shown {
             mode: Some(mode),
             menu: mode.menu_kind(),
+            hint: None,
             status,
             light_taskbar,
             scale,
@@ -293,14 +302,15 @@ fn sync_once(app: &AppHandle, tray: &TrayState) {
     };
     // Released before the tray's own lock; nothing takes them the other way.
     let mode = guard(&store.0).tray_mode();
+    let hint = shortcut::tray_hint(app);
     let mut shown = guard(&tray.shown);
     if tray.reread.swap(false, Ordering::SeqCst) {
         shown.light_taskbar = keyclean_win::taskbar_uses_light_theme();
         shown.scale = primary_scale(app);
     }
     let kind = mode.menu_kind();
-    if kind != shown.menu {
-        let built = build_menu(app, mode).and_then(|(menu, status)| {
+    if kind != shown.menu || hint != shown.hint {
+        let built = build_menu(app, mode, hint).and_then(|(menu, status)| {
             icon.set_menu(Some(menu))?;
             Ok(status)
         });
@@ -309,6 +319,7 @@ fn sync_once(app: &AppHandle, tray: &TrayState) {
             // isn't shown, and a failed swap is tried again.
             Ok(status) => {
                 shown.menu = kind;
+                shown.hint = hint;
                 shown.status = status;
                 shown.mode = None;
             }
@@ -334,9 +345,24 @@ fn sync_once(app: &AppHandle, tray: &TrayState) {
     }
 }
 
-fn build_menu(app: &AppHandle, mode: TrayMode) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
+fn build_menu(
+    app: &AppHandle,
+    mode: TrayMode,
+    hint: Option<TrayHint>,
+) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
     let entry = |id: &str, key: &str, enabled: bool| {
         MenuItem::with_id(app, id, i18n::t(key), enabled, None::<&str>)
+    };
+    // The shortcut as plain text after a tab, which Windows right-aligns, as muda does for an
+    // accelerator [docs: muda 0.20.0 source]. Display only: the menu registers no accelerator.
+    let lock_entry = |id: &str, key: &str, action: ShortcutAction, enabled: bool| {
+        let text = match hint {
+            Some(hint) if hint.action == action => {
+                format!("{}\t{}", i18n::t(key), shortcut::label(hint.shortcut))
+            }
+            _ => i18n::t(key),
+        };
+        MenuItem::with_id(app, id, text, enabled, None::<&str>)
     };
     let title = MenuItem::new(app, i18n::t("app.title"), false, None::<&str>)?;
     let status = MenuItem::new(app, mode.status_text(), false, None::<&str>)?;
@@ -348,8 +374,18 @@ fn build_menu(app: &AppHandle, mode: TrayMode) -> tauri::Result<(Menu<Wry>, Menu
                 &title,
                 &status,
                 &separator()?,
-                &entry(item::LOCK_KEYBOARD, "tray.lockKeyboard", can_lock)?,
-                &entry(item::LOCK_SELECTED, "tray.lockSelected", can_lock)?,
+                &lock_entry(
+                    item::LOCK_KEYBOARD,
+                    "tray.lockKeyboard",
+                    ShortcutAction::Keyboard,
+                    can_lock,
+                )?,
+                &lock_entry(
+                    item::LOCK_SELECTED,
+                    "tray.lockSelected",
+                    ShortcutAction::Selected,
+                    can_lock,
+                )?,
                 &separator()?,
                 &entry(item::OPEN, "tray.open", true)?,
                 &entry(item::SETTINGS, "tray.settings", true)?,
@@ -395,26 +431,11 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// Locks from the tray with the remembered duration, and `targets` or the remembered ones.
-/// Goes through the overlay like every lock (invariant 11). Doesn't change the remembered
-/// choices: the menu item names what it locks (ADR 0016).
+/// Locks from the tray with the remembered duration, and `targets` or the remembered ones
+/// (ADR 0016).
 fn lock(app: &AppHandle, targets: Option<LockTargets>) {
-    let settings = app.state::<SettingsState>().current();
-    let request = LockRequest {
-        duration: settings.last_duration(),
-        max_lock: settings.max_lock(),
-        targets: targets.unwrap_or_else(|| settings.last_targets()),
-    };
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = overlay::lock(app.clone(), request).await {
-            eprintln!("[keyclean] tray: lock failed: {}", e.details);
-            // A lock already starting or running isn't a problem to report.
-            if !e.is(&EngineError::AlreadyActive) {
-                update_status(&app, |status| status.set_request_error(e));
-            }
-        }
-    });
+    let targets = targets.unwrap_or_else(|| app.state::<SettingsState>().current().last_targets());
+    lock_remembered(app, targets, LockOrigin::Tray);
 }
 
 #[cfg(test)]
