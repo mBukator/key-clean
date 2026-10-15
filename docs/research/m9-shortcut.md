@@ -78,3 +78,6 @@ WS_EX_TOOLWINDOW`, no parent), with the module handle from `__ImageBase`. `Regis
     - The notice depends on the Raw Input sink seeing a key the hook missed (ADR 0010). It not
       firing suggests UIPI keeps that input from the Raw Input sink as well as the hook.
       [assumption]
+- Elevated-window warning (M9.md step 13, 2026-10-15): with the admin terminal in front during a
+  keyboard lock, the overlay and the dashboard showed "Typing reaches administrator windows during
+  a lock." [tested]

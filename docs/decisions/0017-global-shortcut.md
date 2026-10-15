@@ -4,8 +4,8 @@
   M9 manual test Max accepted the points the plan didn't settle (the exact shortcut rules with
   Ctrl+Alt+Shift refused too, retrying on every dashboard open, the "unavailable" state before
   the first registration attempt, the tray showing the shortcut after a tab, the debug-only
-  `KEYCLEAN_E2E_SHORTCUT` variables) and chose the elevated-window warning below. The warning
-  awaits its manual check (M9.md step 13).
+  `KEYCLEAN_E2E_SHORTCUT` variables) and chose the elevated-window warning below, which passed
+  M9.md step 13 the same day.
 - Deciders: Max
 - Related: M9; §12, §28, §30, §32 "Shortcuts", §46; invariants 3, 4, 8, 11; privacy invariants;
   ADR 0005 (elevated windows), 0007 (injected input), 0009 (engine process), 0014 (overlay gate),
