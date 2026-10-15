@@ -1,5 +1,5 @@
-//! The settings file (§32, ADR 0015): the maximum lock duration and the last started lock's
-//! duration and targets. Rust owns it through `tauri-plugin-store`; no window is granted the
+//! The settings file (§32, ADR 0015): the maximum lock duration, the last started lock's
+//! duration and targets, and the start shortcut with what it locks (ADR 0017). Rust owns it through `tauri-plugin-store`; no window is granted the
 //! plugin's commands, so the webview can only ask through this app's own commands.
 //!
 //! The rules (ranges, defaults, clamping) live in `keyclean_core::settings`. A missing or corrupt
@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use keyclean_win::LockTargets;
-use keyclean_win::keyclean_core::settings::{Settings, StoredSettings};
+use keyclean_win::keyclean_core::settings::{Settings, StoredSettings, StoredShortcut};
+use keyclean_win::keyclean_core::shortcut::{Shortcut, ShortcutAction};
 use serde_json::Value;
 use tauri::{AppHandle, Wry};
 use tauri_plugin_store::{Store, StoreBuilder};
@@ -24,6 +25,10 @@ const MAX_LOCK_MINUTES: &str = "maxLockMinutes";
 const LAST_DURATION_SECS: &str = "lastDurationSecs";
 const LAST_KEYBOARD: &str = "lastKeyboard";
 const LAST_MOUSE: &str = "lastMouse";
+/// `"Ctrl+Shift+K"` and the like, or `null` when the shortcut is off.
+const START_SHORTCUT: &str = "startShortcut";
+/// `"keyboard"` or `"selected"`.
+const SHORTCUT_ACTION: &str = "shortcutAction";
 
 /// The settings in effect, and the file they are written to.
 pub struct SettingsState {
@@ -51,6 +56,11 @@ impl SettingsState {
                     last_duration_secs: get(LAST_DURATION_SECS).as_ref().and_then(Value::as_u64),
                     last_keyboard: get(LAST_KEYBOARD).as_ref().and_then(Value::as_bool),
                     last_mouse: get(LAST_MOUSE).as_ref().and_then(Value::as_bool),
+                    start_shortcut: get(START_SHORTCUT).as_ref().and_then(read_shortcut),
+                    shortcut_action: get(SHORTCUT_ACTION)
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .and_then(ShortcutAction::parse),
                 }
             });
         SettingsState {
@@ -74,6 +84,16 @@ impl SettingsState {
         self.update(|s| s.remember_lock(duration, targets))
     }
 
+    /// Changes the start shortcut (`None` turns it off) and saves it.
+    pub fn set_start_shortcut(&self, shortcut: Option<Shortcut>) -> Settings {
+        self.update(|s| s.set_start_shortcut(shortcut))
+    }
+
+    /// Changes what the start shortcut locks and saves it.
+    pub fn set_shortcut_action(&self, action: ShortcutAction) -> Settings {
+        self.update(|s| s.set_shortcut_action(action))
+    }
+
     fn update(&self, change: impl FnOnce(&mut Settings)) -> Settings {
         let mut settings = guard(&self.settings);
         change(&mut settings);
@@ -92,11 +112,60 @@ impl SettingsState {
             );
             put(LAST_KEYBOARD, stored.last_keyboard.map(Value::from));
             put(LAST_MOUSE, stored.last_mouse.map(Value::from));
+            put(START_SHORTCUT, stored.start_shortcut.map(write_shortcut));
+            put(
+                SHORTCUT_ACTION,
+                stored.shortcut_action.map(|a| Value::from(a.as_str())),
+            );
             // Written while the settings are held, so two saves can't land out of order.
             if let Err(e) = store.save() {
                 eprintln!("[keyclean] settings: couldn't save: {e}");
             }
         }
         updated
+    }
+}
+
+/// `null` is off; a string that breaks the shortcut rules counts as missing (the default).
+fn read_shortcut(value: &Value) -> Option<StoredShortcut> {
+    match value {
+        Value::Null => Some(StoredShortcut::Off),
+        Value::String(text) => Shortcut::parse(text).ok().map(StoredShortcut::On),
+        _ => None,
+    }
+}
+
+fn write_shortcut(stored: StoredShortcut) -> Value {
+    match stored {
+        StoredShortcut::Off => Value::Null,
+        StoredShortcut::On(shortcut) => Value::from(shortcut.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcut_values_round_trip() {
+        for stored in [
+            StoredShortcut::Off,
+            StoredShortcut::On(Shortcut::parse("Alt+Shift+F5").unwrap()),
+        ] {
+            assert_eq!(read_shortcut(&write_shortcut(stored)), Some(stored));
+        }
+    }
+
+    #[test]
+    fn a_broken_shortcut_counts_as_missing() {
+        for value in [
+            Value::from("Ctrl+Alt+K"),
+            Value::from("Ctrl+C"),
+            Value::from(""),
+            Value::from(3),
+            Value::from(false),
+        ] {
+            assert_eq!(read_shortcut(&value), None, "{value}");
+        }
     }
 }

@@ -23,6 +23,7 @@ serde_json = "1"
 keyclean-core = { path = "../crates/keyclean-core" }
 keyclean-win = { path = "../crates/keyclean-win" }
 tauri-plugin-store = "2"
+tauri-plugin-global-shortcut = "~2.4"
 
 [lints]
 workspace = true

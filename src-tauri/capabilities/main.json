@@ -1,7 +1,7 @@
 {
     "$schema": "../gen/schemas/desktop-schema.json",
     "identifier": "main",
-    "description": "Main window: listen for engine status, request or end a lock, read the lock options, change the maximum lock duration, read the status and the device list. Nothing else.",
+    "description": "Main window: listen for engine status, request or end a lock, read the lock options, change the maximum lock duration, read the status and the device list, read and change the start shortcut. Nothing else.",
     "windows": ["main"],
     "permissions": [
         "core:event:default",
@@ -10,6 +10,12 @@
         "allow-get-lock-options",
         "allow-set-max-lock",
         "allow-get-status",
-        "allow-list-devices"
+        "allow-list-devices",
+        "allow-get-shortcut",
+        "allow-set-shortcut",
+        "allow-set-shortcut-action",
+        "allow-begin-shortcut-capture",
+        "allow-end-shortcut-capture",
+        "allow-retry-shortcut"
     ]
 }

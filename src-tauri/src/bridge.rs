@@ -4,6 +4,7 @@ use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
 use keyclean_win::keyclean_core::settings::{
     DurationError, MAX_MAX_LOCK_MINUTES, MIN_DURATION, MIN_MAX_LOCK_MINUTES, Settings,
 };
+use keyclean_win::keyclean_core::shortcut::ShortcutError;
 use keyclean_win::keyclean_core::{countdown, presets};
 use keyclean_win::{
     DeviceChange, DeviceClass, EndReason, EngineError, EngineEvent, EngineNotice, LockTargets,
@@ -49,6 +50,30 @@ impl ErrorDto {
     pub fn overlay_timeout(details: String) -> Self {
         ErrorDto {
             message_key: "error.overlay_timeout".to_owned(),
+            details,
+        }
+    }
+
+    /// The start shortcut breaks a rule (ADR 0017); the message says which.
+    pub fn shortcut_refused(why: ShortcutError) -> Self {
+        ErrorDto {
+            message_key: why.message_key().to_owned(),
+            details: format!("shortcut refused: {why}"),
+        }
+    }
+
+    /// The page asked for a shortcut action that doesn't exist.
+    pub fn shortcut_refused_action(action: &str) -> Self {
+        ErrorDto {
+            message_key: "shortcut.error.action".to_owned(),
+            details: format!("unknown shortcut action {action:?}"),
+        }
+    }
+
+    /// Windows didn't register the start shortcut, most likely because another app holds it.
+    pub fn shortcut_unavailable(details: String) -> Self {
+        ErrorDto {
+            message_key: "error.shortcut_unavailable".to_owned(),
             details,
         }
     }
@@ -798,6 +823,35 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["messageKey"], "error.engine_stopped");
         assert!(json["details"].is_string());
+    }
+
+    #[test]
+    fn every_shortcut_error_has_a_ui_string() {
+        let strings: std::collections::HashMap<String, String> =
+            serde_json::from_str(include_str!("../../locales/en/strings.json")).unwrap();
+        let mut errors: Vec<ErrorDto> = [
+            ShortcutError::Unreadable,
+            ShortcutError::NoKey,
+            ShortcutError::TwoKeys,
+            ShortcutError::UnsupportedKey,
+            ShortcutError::ReservedKey,
+            ShortcutError::Emergency,
+            ShortcutError::CtrlAlt,
+            ShortcutError::Win,
+            ShortcutError::NeedsShift,
+        ]
+        .into_iter()
+        .map(ErrorDto::shortcut_refused)
+        .collect();
+        errors.push(ErrorDto::shortcut_refused_action("mouse"));
+        errors.push(ErrorDto::shortcut_unavailable(String::new()));
+        for error in errors {
+            assert!(
+                strings.contains_key(&error.message_key),
+                "missing {}",
+                error.message_key
+            );
+        }
     }
 
     #[test]

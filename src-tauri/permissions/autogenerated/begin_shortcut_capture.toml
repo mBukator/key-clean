@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-begin-shortcut-capture"
+description = "Enables the begin_shortcut_capture command without any pre-configured scope."
+commands.allow = ["begin_shortcut_capture"]
+
+[[permission]]
+identifier = "deny-begin-shortcut-capture"
+description = "Denies the begin_shortcut_capture command without any pre-configured scope."
+commands.deny = ["begin_shortcut_capture"]

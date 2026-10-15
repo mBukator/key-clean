@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-end-shortcut-capture"
+description = "Enables the end_shortcut_capture command without any pre-configured scope."
+commands.allow = ["end_shortcut_capture"]
+
+[[permission]]
+identifier = "deny-end-shortcut-capture"
+description = "Denies the end_shortcut_capture command without any pre-configured scope."
+commands.deny = ["end_shortcut_capture"]

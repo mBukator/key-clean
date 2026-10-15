@@ -12,6 +12,12 @@ fn main() {
             "get_overlay_session",
             "overlay_ready",
             "overlay_tick",
+            "get_shortcut",
+            "set_shortcut",
+            "set_shortcut_action",
+            "begin_shortcut_capture",
+            "end_shortcut_capture",
+            "retry_shortcut",
         ]));
     if let Err(e) = tauri_build::try_build(attributes) {
         panic!("tauri build script failed: {e:#}");
