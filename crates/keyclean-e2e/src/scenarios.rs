@@ -1,4 +1,4 @@
-//! The automated M1-M8 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! The automated M1-M9 checks. Each maps to steps in docs/testing/manual/M1.md, or to
 //! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3". The M5 checks (mouse
 //! and touchpad lock, ADR 0013) are marked "M5", the M6 checks (full-screen overlay, ADR 0014)
 //! "M6", the M8 checks (system tray and window lifecycle, ADR 0016) "M8".
