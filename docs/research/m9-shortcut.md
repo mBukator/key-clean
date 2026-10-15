@@ -67,8 +67,14 @@ WS_EX_TOOLWINDOW`, no parent), with the module handle from `__ImageBase`. `Regis
 
 ## Measurements
 
-To be filled in from M9.md:
-
-- Harness S45-S48 (step 0).
-- Elevated window (step 11): does the hotkey fire, does the overlay take the focus, does typing
-  reach the administrator window.
+- Harness S1-S48, 2026-10-15: 43 passed, 0 failed in 299 s. S45-S47 passed, so `WM_HOTKEY`
+  fires for keys synthesized with `SendInput`. [tested]
+- Elevated window (M9.md step 11, 2026-10-15, keyboard-only lock, admin terminal on the second
+  monitor): the shortcut locked with the admin terminal focused; letters typed into the admin
+  terminal during the lock appeared there; the engine's "Typing reaches administrator windows
+  during a lock." notice didn't show. [tested]
+    - So M1 step 11 (got through) holds with the engine in its own process; M3 step 7 (blocked)
+      didn't reproduce. Why M3 differed is unknown. [tested, both]
+    - The notice depends on the Raw Input sink seeing a key the hook missed (ADR 0010). It not
+      firing suggests UIPI keeps that input from the Raw Input sink as well as the hook.
+      [assumption]
