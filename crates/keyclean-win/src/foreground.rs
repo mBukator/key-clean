@@ -24,8 +24,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// opened (which is what an elevated process looks like from a standard one), while KeyClean's own
 /// process is not elevated. `None` if no window is in the foreground (e.g. during a focus change or
 /// a desktop switch): inconclusive, so the engine waits for the next keystroke to check again
-/// rather than end the lock on a guess.
-pub(crate) fn is_elevated_above_us() -> Option<bool> {
+/// rather than end the lock on a guess. The app also asks once per countdown second during a
+/// lock, to warn that typing reaches that window (M9, ADR 0005).
+pub fn is_elevated_above_us() -> Option<bool> {
     // SAFETY: no preconditions; returns a null handle if no window is in the foreground.
     window_elevated_above_us(unsafe { GetForegroundWindow() })
 }

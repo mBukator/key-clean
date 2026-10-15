@@ -19,10 +19,12 @@ use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{DisplayRequest, EngineError, LockRequest, safety_profile};
 use serde::Serialize;
 use tauri::window::Color;
-use tauri::{AppHandle, Manager, Monitor, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, Monitor, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
-use crate::bridge::ErrorDto;
-use crate::{EngineSlot, StatusStore, dashboard, guard, i18n};
+use crate::bridge::{ErrorDto, STATUS_EVENT};
+use crate::{EngineSlot, StatusStore, dashboard, guard, i18n, tray};
 
 /// Prefix of the overlay window labels; each attempt gets its own window, `overlay-<n>`, so a
 /// window still closing never collides with the next one. The overlay capability matches it.
@@ -428,7 +430,8 @@ fn end_lock(app: &AppHandle, id: AttemptId, loss: OverlayLoss, show_main: bool) 
 }
 
 /// Called on every countdown status during a lock: checks on the main thread, where the window
-/// lives, that the overlay is still up. Only runs during a lock, so nothing polls at idle.
+/// lives, that the overlay is still up, and whether the window in front is elevated (typing there
+/// gets past the hook, so the user is told). Only runs during a lock, so nothing polls at idle.
 pub fn check_soon(app: &AppHandle) {
     let watched = app.state::<OverlayState>().lock().watch.map(|(id, _)| id);
     if watched.is_none() {
@@ -468,8 +471,38 @@ fn check(app: &AppHandle) {
             _ => None,
         }
     };
+    if loss.is_none()
+        && elevated_check_due(app)
+        && keyclean_win::is_elevated_above_us() == Some(true)
+    {
+        warn_elevated_window(app);
+    }
     if let Some(loss) = loss {
         end_lock(app, id, loss, true);
+    }
+}
+
+/// Whether this lock still needs the elevated-window check (keyboard locked, not warned yet).
+fn elevated_check_due(app: &AppHandle) -> bool {
+    app.try_state::<StatusStore>()
+        .is_some_and(|store| guard(&store.0).elevated_check_due())
+}
+
+/// Shows the elevated-window notice on the overlay and in the dashboard, once per keyboard lock
+/// (M9.md step 11 measured that typing into an administrator window gets through, and the
+/// engine's own check doesn't see it; ADR 0005, 0017).
+fn warn_elevated_window(app: &AppHandle) {
+    let Some(store) = app.try_state::<StatusStore>() else {
+        return;
+    };
+    let snapshot = {
+        let mut status = guard(&store.0);
+        status.elevated_window_in_front().then(|| status.clone())
+    };
+    if let Some(snapshot) = snapshot {
+        eprintln!("[keyclean] notice: an elevated window is in front during the lock");
+        tray::show(app);
+        let _ = app.emit(STATUS_EVENT, snapshot);
     }
 }
 
