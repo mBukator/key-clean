@@ -1,7 +1,9 @@
-//! The automated M1-M9 checks. Each maps to steps in docs/testing/manual/M1.md, or to
+//! The automated M1-M10 checks. Each maps to steps in docs/testing/manual/M1.md, or to
 //! docs/testing/manual/M2.md / M3.md when its steps start with "M2" / "M3". The M5 checks (mouse
 //! and touchpad lock, ADR 0013) are marked "M5", the M6 checks (full-screen overlay, ADR 0014)
-//! "M6", the M8 checks (system tray and window lifecycle, ADR 0016) "M8".
+//! "M6", the M8 checks (system tray and window lifecycle, ADR 0016) "M8", the M10 checks (start
+//! at sign-in and notifications, ADR 0018) "M10". No check touches the startup entry in the
+//! registry: they pass `--autostart` themselves.
 //!
 //! Since M8, closing the dashboard sends KeyClean to the tray instead of exiting, so the app
 //! scenarios end the app with `taskkill /PID` without `/F` ([`quit_app`]).
@@ -328,6 +330,24 @@ pub fn process_scenarios(skip_app: bool) -> Vec<Scenario> {
                 steps: "M9",
                 name: "A start shortcut another program holds doesn't stop KeyClean",
                 run: shortcut_taken,
+            },
+            Scenario {
+                id: "S49",
+                steps: "M10",
+                name: "A start at sign-in stays in the tray; with Start minimized off it opens",
+                run: autostart_launch,
+            },
+            Scenario {
+                id: "S50",
+                steps: "M10",
+                name: "A second start at sign-in leaves the running KeyClean as it is",
+                run: autostart_second_launch,
+            },
+            Scenario {
+                id: "S51",
+                steps: "M10",
+                name: "A lock ending with no window open asks for a toast; KeyClean still quits",
+                run: notification_after_lock,
             },
         ]);
     }
@@ -860,7 +880,19 @@ fn start_app_with(
     env: &[(&str, &str)],
     log_id: &str,
 ) -> Result<Guard, String> {
+    start_app_args(exe, &[], autolock_secs, env, log_id)
+}
+
+/// [`start_app_with`] with command-line arguments, such as `--autostart`.
+fn start_app_args(
+    exe: &PathBuf,
+    args: &[&str],
+    autolock_secs: Option<u64>,
+    env: &[(&str, &str)],
+    log_id: &str,
+) -> Result<Guard, String> {
     let mut cmd = Command::new(exe);
+    cmd.args(args);
     // Only what this scenario asks for, never a leftover from the user's shell.
     for name in [
         "KEYCLEAN_E2E_AUTOLOCK",
@@ -870,9 +902,14 @@ fn start_app_with(
         NO_DASHBOARD,
         SHORTCUT_ENV,
         SHORTCUT_TARGETS_ENV,
+        START_MINIMIZED_ENV,
+        NOTIFICATIONS_ENV,
     ] {
         cmd.env_remove(name);
     }
+    // No toasts unless a check asks for them: the harness runs many locks with no window open,
+    // and the real settings file may have notifications on.
+    cmd.env(NOTIFICATIONS_ENV, "0");
     cmd.envs(env.iter().copied());
     cmd.stdout(Stdio::null());
     let log = target_dir()
@@ -896,6 +933,15 @@ const APP_WINDOW_CLASS: &str = "Tauri Window";
 
 /// Debug-only app variable: start without the dashboard, as KeyClean in the tray (ADR 0016).
 const NO_DASHBOARD: &str = "KEYCLEAN_E2E_NO_DASHBOARD";
+
+/// Debug-only app variable: `0` or `1` in place of the "Start minimized" setting (ADR 0018).
+const START_MINIMIZED_ENV: &str = "KEYCLEAN_E2E_START_MINIMIZED";
+
+/// Debug-only app variable: `0` or `1` in place of the "Show notifications" setting (ADR 0018).
+const NOTIFICATIONS_ENV: &str = "KEYCLEAN_E2E_NOTIFICATIONS";
+
+/// The argument Windows passes at sign-in (`keyclean_core::startup::AUTOSTART_FLAG`).
+const AUTOSTART: &str = "--autostart";
 
 /// Hidden windows the app's close guard subclasses: tao's event target, the single-instance
 /// window, the tray icon's window (M8) and the global-shortcut plugin's window (M9).
@@ -3601,6 +3647,206 @@ fn shortcut_taken(ctx: &mut Ctx<'_>) -> Outcome {
     };
     let result = run();
     drop(held);
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S49: a start at sign-in (`--autostart`) with Start minimized on stays in the tray with no
+/// window and quits cleanly; with Start minimized off it opens the dashboard (§29, ADR 0018).
+fn autostart_launch(_ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut hidden = start_app_args(
+            &exe,
+            &[AUTOSTART],
+            None,
+            &[(START_MINIMIZED_ENV, "1")],
+            "S49-minimized",
+        )?;
+        let pid = hidden.0.id();
+        if !wait_log("S49-minimized", "close guard:", Duration::from_secs(20)).0 {
+            return Err(
+                "the app didn't log its close guard within 20 s; log: e2e-S49-minimized-app.log"
+                    .into(),
+            );
+        }
+        if !wait_log(
+            "S49-minimized",
+            "startup: no dashboard (Autostart)",
+            Duration::from_secs(5),
+        )
+        .0
+        {
+            return Err(
+                "the app didn't log a start in the tray; log: e2e-S49-minimized-app.log".into(),
+            );
+        }
+        sleep(Duration::from_secs(3));
+        expect_app_running(&mut hidden.0, "it started at sign-in")?;
+        if has_visible_app_window(pid) {
+            return Err(
+                "started with --autostart and Start minimized on, the app showed a window".into(),
+            );
+        }
+        let quit_hidden = quit_app(&mut hidden.0, Duration::from_secs(10))?;
+        expect_no_keyclean_left()?;
+        sleep(WEBVIEW_SETTLE);
+
+        let mut shown = start_app_args(
+            &exe,
+            &[AUTOSTART],
+            None,
+            &[(START_MINIMIZED_ENV, "0")],
+            "S49-shown",
+        )?;
+        let pid = shown.0.id();
+        if wait_main_window(pid, Duration::from_secs(20)).is_none() {
+            return Err(
+                "started with --autostart and Start minimized off, the app showed no dashboard \
+                 within 20 s; log: e2e-S49-shown-app.log"
+                    .into(),
+            );
+        }
+        wait_dashboard_guarded("S49-shown")?;
+        let quit_shown = quit_app(&mut shown.0, Duration::from_secs(10))?;
+        expect_no_keyclean_left()?;
+        Ok(format!(
+            "minimized: no window 3 s after startup, taskkill exit after {} ms; not minimized: \
+             dashboard shown, taskkill exit after {} ms; no keyclean.exe left",
+            quit_hidden.as_millis(),
+            quit_shown.as_millis()
+        ))
+    };
+    let result = run();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S50: a second launch carrying `--autostart` (KeyClean already running when Windows starts it)
+/// exits and leaves the first instance in the tray, with no dashboard (ADR 0018).
+fn autostart_second_launch(_ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut first = start_app_with(&exe, None, &[(NO_DASHBOARD, "1")], "S50-first")?;
+        let pid = first.0.id();
+        if !wait_log("S50-first", "close guard:", Duration::from_secs(20)).0 {
+            return Err(
+                "the first instance didn't log its close guard within 20 s; log: \
+                 e2e-S50-first-app.log"
+                    .into(),
+            );
+        }
+        if has_visible_app_window(pid) {
+            return Err(format!(
+                "started with {NO_DASHBOARD}=1, the first instance showed a window anyway"
+            ));
+        }
+        let mut second = start_app_args(&exe, &[AUTOSTART], None, &[], "S50-second")?;
+        let launched = Instant::now();
+        if !wait_exit(&mut second.0, Duration::from_secs(10)) {
+            return Err("the second instance kept running".into());
+        }
+        let second_exit = launched.elapsed();
+        expect_app_running(&mut first.0, "a second instance started at sign-in")?;
+        // As long as S12 gives a plain second launch to show the dashboard.
+        if wait_main_window(pid, Duration::from_secs(10)).is_some() {
+            return Err(
+                "a second launch with --autostart opened the first instance's dashboard".into(),
+            );
+        }
+        let quit = quit_app(&mut first.0, Duration::from_secs(10))?;
+        expect_no_keyclean_left()?;
+        Ok(format!(
+            "second instance exited after {} ms; the first showed no window for 10 s; taskkill \
+             exit after {} ms, no keyclean.exe left",
+            second_exit.as_millis(),
+            quit.as_millis()
+        ))
+    };
+    let result = run();
+    sleep(WEBVIEW_SETTLE);
+    result.into()
+}
+
+/// S51: a 3 s lock with no window open and notifications on ends by its timer and asks for the
+/// "Cleaning complete" toast; afterwards `taskkill` without `/F` still exits, so showing a toast
+/// left no unguarded window (ADR 0018). Whether Windows displayed it is the manual test's job
+/// (the plugin doesn't report it).
+fn notification_after_lock(ctx: &mut Ctx<'_>) -> Outcome {
+    let exe = match app_exe() {
+        Ok(exe) => exe,
+        Err(skip) => return skip,
+    };
+    let run = || -> Result<String, String> {
+        let mut app = start_app_with(
+            &exe,
+            Some(3),
+            &[(NO_DASHBOARD, "1"), (NOTIFICATIONS_ENV, "1")],
+            "S51",
+        )?;
+        let pid = app.0.id();
+        wait_app_locked(ctx.observer, "S51", Duration::from_secs(20))?;
+        // The hidden windows during the lock; the overlay's own window is left out.
+        let before: Vec<String> = system::window_classes(pid)
+            .into_iter()
+            .filter(|class| class != APP_WINDOW_CLASS)
+            .collect();
+        wait_input_back(ctx.observer, Duration::from_secs(8))?
+            .ok_or("input wasn't back within 8 s of a 3 s lock")?;
+        let (asked, log) = wait_log(
+            "S51",
+            "notification: requested (cleaningComplete)",
+            Duration::from_secs(3),
+        );
+        if !asked {
+            return Err(format!(
+                "no \"notification: requested (cleaningComplete)\" line after the lock ended \
+                 ({}); log: e2e-S51-app.log",
+                ended_note(&log)
+            ));
+        }
+        // Long enough for the toast to be shown and any window it brings to exist.
+        sleep(Duration::from_secs(3));
+        // Read again: the failure is logged after the request.
+        if app_log("S51").contains("notification: failed") {
+            return Err("the plugin couldn't prepare the toast; log: e2e-S51-app.log".into());
+        }
+        // A window the toast added would get taskkill's WM_CLOSE unguarded, and a clean exit
+        // wouldn't show it: compare the app's hidden windows with those during the lock.
+        let after: Vec<String> = system::window_classes(pid)
+            .into_iter()
+            .filter(|class| class != APP_WINDOW_CLASS)
+            .collect();
+        if after != before {
+            return Err(format!(
+                "the app's hidden windows changed after the toast: during the lock {before:?}, \
+                 after {after:?}; a new one isn't covered by the close guard"
+            ));
+        }
+        expect_app_running(&mut app.0, "its toast was shown")?;
+        if has_visible_app_window(pid) {
+            return Err("a KeyClean window was visible after the lock ended".into());
+        }
+        let exited = quit_app(&mut app.0, Duration::from_secs(10))?;
+        let left = expect_no_keyclean_left()?;
+        expect_probes_pass(ctx.observer)?;
+        expect_no_stuck_keys()?;
+        Ok(format!(
+            "3 s lock ended by its timer and asked for the toast; {} hidden windows, unchanged; \
+             taskkill exit after {} ms, no keyclean.exe left {} ms later",
+            after.len(),
+            exited.as_millis(),
+            left.as_millis()
+        ))
+    };
+    let result = run();
+    crate::harness::release_watched_keys();
     sleep(WEBVIEW_SETTLE);
     result.into()
 }

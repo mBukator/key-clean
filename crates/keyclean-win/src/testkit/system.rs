@@ -18,6 +18,8 @@ use windows::core::BOOL;
 
 struct Search {
     pid: u32,
+    /// Only windows with `WS_VISIBLE`.
+    visible_only: bool,
     found: Vec<isize>,
 }
 
@@ -29,21 +31,44 @@ unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: `hwnd` comes from EnumWindows; `pid` is writable.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     // SAFETY: as above.
-    if pid == search.pid && unsafe { IsWindowVisible(hwnd) }.as_bool() {
+    if pid == search.pid && (!search.visible_only || unsafe { IsWindowVisible(hwnd) }.as_bool()) {
         search.found.push(hwnd.0 as isize);
     }
     BOOL(1)
 }
 
 fn visible_windows(pid: u32) -> Vec<isize> {
+    top_level_windows(pid, true)
+}
+
+fn top_level_windows(pid: u32, visible_only: bool) -> Vec<isize> {
     let mut search = Search {
         pid,
+        visible_only,
         found: Vec::new(),
     };
     // SAFETY: `collect` matches WNDENUMPROC and only uses `lparam` as the `Search` it points to,
     // which outlives this call.
     let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut search as *mut Search as isize)) };
     search.found
+}
+
+/// The class names of every top-level window of process `pid`, hidden ones included (the
+/// windows `taskkill` without `/F` sends `WM_CLOSE` to), sorted.
+pub fn window_classes(pid: u32) -> Vec<String> {
+    let mut classes: Vec<String> = top_level_windows(pid, false)
+        .into_iter()
+        .map(|hwnd| window_class(HWND(hwnd as *mut _)))
+        .collect();
+    classes.sort();
+    classes
+}
+
+fn window_class(hwnd: HWND) -> String {
+    let mut buffer = [0u16; 256];
+    // SAFETY: `buffer` is writable for its whole length, which the wrapper passes as the maximum.
+    let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    String::from_utf16_lossy(&buffer[..usize::try_from(len).unwrap_or(0)])
 }
 
 /// Number of visible top-level windows owned by process `pid`.
@@ -62,10 +87,7 @@ pub struct WindowInfo {
 
 fn window_info(hwnd: isize) -> WindowInfo {
     let hwnd = HWND(hwnd as *mut _);
-    let mut buffer = [0u16; 256];
-    // SAFETY: `buffer` is writable for its whole length, which the wrapper passes as the maximum.
-    let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
-    let class = String::from_utf16_lossy(&buffer[..usize::try_from(len).unwrap_or(0)]);
+    let class = window_class(hwnd);
     // SAFETY: WM_NULL does nothing; SMTO_ABORTIFHUNG returns at once if the thread is hung, and
     // the 1 s timeout bounds the wait otherwise. A zero result means timeout or failure.
     let answered = unsafe {
