@@ -1,6 +1,8 @@
 //! The settings file (§32, ADR 0015): the maximum lock duration, the last started lock's
-//! duration and targets, and the start shortcut with what it locks (ADR 0017). Rust owns it through `tauri-plugin-store`; no window is granted the
-//! plugin's commands, so the webview can only ask through this app's own commands.
+//! duration and targets, the start shortcut with what it locks (ADR 0017), and the
+//! start-minimized and notification switches (ADR 0018). Rust owns it through
+//! `tauri-plugin-store`; no window is granted the plugin's commands, so the webview can only ask
+//! through this app's own commands. Starting with Windows lives in the registry, not here.
 //!
 //! The rules (ranges, defaults, clamping) live in `keyclean_core::settings`. A missing or corrupt
 //! file loads as defaults [docs: tauri-plugin-store 2.5.0 source, `StoreBuilder::build` ignores a
@@ -29,6 +31,8 @@ const LAST_MOUSE: &str = "lastMouse";
 const START_SHORTCUT: &str = "startShortcut";
 /// `"keyboard"` or `"selected"`.
 const SHORTCUT_ACTION: &str = "shortcutAction";
+const START_MINIMIZED: &str = "startMinimized";
+const NOTIFICATIONS: &str = "notifications";
 
 /// The settings in effect, and the file they are written to.
 pub struct SettingsState {
@@ -61,6 +65,8 @@ impl SettingsState {
                         .as_ref()
                         .and_then(Value::as_str)
                         .and_then(ShortcutAction::parse),
+                    start_minimized: get(START_MINIMIZED).as_ref().and_then(Value::as_bool),
+                    notifications: get(NOTIFICATIONS).as_ref().and_then(Value::as_bool),
                 }
             });
         SettingsState {
@@ -117,6 +123,8 @@ impl SettingsState {
                 SHORTCUT_ACTION,
                 stored.shortcut_action.map(|a| Value::from(a.as_str())),
             );
+            put(START_MINIMIZED, stored.start_minimized.map(Value::from));
+            put(NOTIFICATIONS, stored.notifications.map(Value::from));
             // Written while the settings are held, so two saves can't land out of order.
             if let Err(e) = store.save() {
                 eprintln!("[keyclean] settings: couldn't save: {e}");

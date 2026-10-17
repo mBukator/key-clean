@@ -2,7 +2,9 @@
 //! settings file and hands the stored values to [`Settings::from_stored`], which never fails.
 //!
 //! Nothing about a running lock is stored here (invariant 9): only the maximum lock duration, the
-//! choices of the last lock that started, and the start shortcut with what it locks (ADR 0017).
+//! choices of the last lock that started, the start shortcut with what it locks (ADR 0017), and
+//! the start-minimized and notification switches (ADR 0018). Whether KeyClean starts with
+//! Windows isn't stored: the registry is the record (`crate::startup`).
 
 use std::time::Duration;
 
@@ -89,6 +91,10 @@ pub struct StoredSettings {
     pub start_shortcut: Option<StoredShortcut>,
     /// What the start shortcut locks.
     pub shortcut_action: Option<ShortcutAction>,
+    /// Whether a launch at sign-in stays in the tray.
+    pub start_minimized: Option<bool>,
+    /// Whether KeyClean shows Windows notifications.
+    pub notifications: Option<bool>,
 }
 
 /// Settings in effect, always within their ranges.
@@ -99,6 +105,8 @@ pub struct Settings {
     last_targets: LockTargets,
     start_shortcut: Option<Shortcut>,
     shortcut_action: ShortcutAction,
+    start_minimized: bool,
+    notifications: bool,
 }
 
 impl Default for Settings {
@@ -109,6 +117,8 @@ impl Default for Settings {
             last_targets: LockTargets::KEYBOARD,
             start_shortcut: Some(DEFAULT_SHORTCUT),
             shortcut_action: ShortcutAction::default(),
+            start_minimized: true,
+            notifications: true,
         }
     }
 }
@@ -137,6 +147,8 @@ impl Settings {
                 Some(StoredShortcut::On(shortcut)) => Some(shortcut),
             },
             shortcut_action: stored.shortcut_action.unwrap_or_default(),
+            start_minimized: stored.start_minimized.unwrap_or(true),
+            notifications: stored.notifications.unwrap_or(true),
         };
         settings.fit_last_duration();
         settings
@@ -154,6 +166,8 @@ impl Settings {
                     .map_or(StoredShortcut::Off, StoredShortcut::On),
             ),
             shortcut_action: Some(self.shortcut_action),
+            start_minimized: Some(self.start_minimized),
+            notifications: Some(self.notifications),
         }
     }
 
@@ -193,6 +207,26 @@ impl Settings {
             ShortcutAction::Keyboard => LockTargets::KEYBOARD,
             ShortcutAction::Selected => self.last_targets,
         }
+    }
+
+    /// Whether a launch at sign-in stays in the tray (§29). On by default.
+    pub fn start_minimized(&self) -> bool {
+        self.start_minimized
+    }
+
+    /// Whether KeyClean shows Windows notifications (§31). On by default.
+    pub fn notifications(&self) -> bool {
+        self.notifications
+    }
+
+    /// Changes whether a launch at sign-in stays in the tray.
+    pub fn set_start_minimized(&mut self, on: bool) {
+        self.start_minimized = on;
+    }
+
+    /// Changes whether KeyClean shows Windows notifications.
+    pub fn set_notifications(&mut self, on: bool) {
+        self.notifications = on;
     }
 
     /// Changes the start shortcut; `None` turns it off.
@@ -338,8 +372,12 @@ mod tests {
             last_mouse: Some(true),
             start_shortcut: Some(StoredShortcut::On(Shortcut::parse("Alt+Shift+3").unwrap())),
             shortcut_action: Some(ShortcutAction::Keyboard),
+            start_minimized: Some(false),
+            notifications: Some(false),
         });
         assert_eq!(s.max_lock_minutes(), 45);
+        assert!(!s.start_minimized());
+        assert!(!s.notifications());
         assert_eq!(
             s.start_shortcut().map(|s| s.to_string()).as_deref(),
             Some("Alt+Shift+3")
@@ -466,6 +504,8 @@ mod tests {
             last_mouse: Some(false),
             start_shortcut: None,
             shortcut_action: None,
+            start_minimized: None,
+            notifications: None,
         });
         assert_eq!(
             s.to_stored(),
@@ -476,6 +516,8 @@ mod tests {
                 last_mouse: Some(false),
                 start_shortcut: Some(StoredShortcut::On(DEFAULT_SHORTCUT)),
                 shortcut_action: Some(ShortcutAction::Selected),
+                start_minimized: Some(true),
+                notifications: Some(true),
             }
         );
     }
@@ -494,6 +536,18 @@ mod tests {
         let stored = s.to_stored();
         assert_eq!(stored.start_shortcut, Some(StoredShortcut::Off));
         assert_eq!(Settings::from_stored(stored).start_shortcut(), None);
+    }
+
+    #[test]
+    fn start_minimized_and_notifications_default_on_and_save() {
+        let mut s = Settings::default();
+        assert!(s.start_minimized());
+        assert!(s.notifications());
+        s.set_start_minimized(false);
+        s.set_notifications(false);
+        let back = Settings::from_stored(s.to_stored());
+        assert!(!back.start_minimized());
+        assert!(!back.notifications());
     }
 
     #[test]
