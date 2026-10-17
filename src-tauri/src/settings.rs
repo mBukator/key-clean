@@ -100,6 +100,16 @@ impl SettingsState {
         self.update(|s| s.set_shortcut_action(action))
     }
 
+    /// Changes whether a launch at sign-in stays in the tray, and saves it.
+    pub fn set_start_minimized(&self, on: bool) -> Settings {
+        self.update(|s| s.set_start_minimized(on))
+    }
+
+    /// Changes whether KeyClean shows Windows notifications, and saves it.
+    pub fn set_notifications(&self, on: bool) -> Settings {
+        self.update(|s| s.set_notifications(on))
+    }
+
     fn update(&self, change: impl FnOnce(&mut Settings)) -> Settings {
         let mut settings = guard(&self.settings);
         change(&mut settings);

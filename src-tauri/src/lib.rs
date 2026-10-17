@@ -10,7 +10,9 @@
 mod bridge;
 mod dashboard;
 mod devices;
+mod general;
 mod i18n;
+mod notify;
 mod overlay;
 mod settings;
 mod shortcut;
@@ -22,9 +24,11 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use keyclean_win::SessionState;
+use keyclean_win::keyclean_core::notify::Toast;
 use keyclean_win::keyclean_core::policy::SafetyProfile;
 use keyclean_win::keyclean_core::restart::RestartBudget;
 use keyclean_win::keyclean_core::settings::check_duration;
+use keyclean_win::keyclean_core::startup::{self, Launch};
 use keyclean_win::keyclean_core::time::MonoTime;
 use keyclean_win::{
     EngineClient, EngineError, EngineEvent, LockRequest, LockTargets, safety_profile,
@@ -284,25 +288,29 @@ fn forward_events(app: AppHandle, events: Receiver<EngineEvent>) -> Option<Recei
                 let Some(store) = app.try_state::<StatusStore>() else {
                     continue;
                 };
-                let snapshot = {
+                let ended = matches!(event, EngineEvent::SessionEnded { .. });
+                let (snapshot, toast) = {
                     let mut status = guard(&store.0);
                     status.apply(&event);
                     if let EngineEvent::Error(e @ EngineError::EngineProcess(_)) = &event {
                         // The engine process is gone; nothing more can be locked.
                         status.set_engine(false, Some(ErrorDto::from(e)));
                     }
-                    status.clone()
+                    let toast = ended.then(|| status.toast_after_lock()).flatten();
+                    (status.clone(), toast)
                 };
                 let idle = snapshot.is_idle();
                 tray::show(&app);
-                let show_problem = matches!(event, EngineEvent::SessionEnded { .. })
-                    && snapshot.ended_with_problem();
+                let show_problem = ended && snapshot.ended_with_problem();
                 // To every window: the main window and the overlay.
                 let _ = app.emit(STATUS_EVENT, snapshot);
                 follow_overlay(&app, &event, idle);
                 if show_problem && !is_exiting(&app) {
                     // Opened even if it was closed, so the plain-language error is seen (§46).
                     dashboard::open(&app);
+                } else if let Some(toast) = toast.filter(|_| !is_exiting(&app)) {
+                    // With the dashboard closed, a toast says how the lock ended (ADR 0018).
+                    notify::after_lock(&app, toast);
                 }
             }
             if engine_died {
@@ -365,6 +373,7 @@ fn restart_engine(app: &AppHandle) {
     let allowed = app.try_state::<Restarts>().is_some_and(|r| r.allow());
     if !allowed {
         eprintln!("[keyclean] engine not restarted: too many restarts");
+        notify::problem(app, Toast::EngineStopped);
         return;
     }
     let Some(slot) = app.try_state::<EngineSlot>() else {
@@ -380,6 +389,7 @@ fn restart_engine(app: &AppHandle) {
             update_status(app, |status| {
                 status.set_engine(false, Some(ErrorDto::from(&e)))
             });
+            notify::problem(app, Toast::EngineStopped);
             return;
         }
     };
@@ -445,8 +455,8 @@ fn keeps_running_in_tray(app: &AppHandle) -> bool {
         .is_some_and(|k| k.0.load(Ordering::SeqCst))
 }
 
-/// Debug builds only: `KEYCLEAN_E2E_NO_DASHBOARD=1` starts without the dashboard, as a start from
-/// the tray will (M10), so the harness can measure a lock with no webview open (ADR 0008).
+/// Debug builds only: `KEYCLEAN_E2E_NO_DASHBOARD=1` starts without the dashboard, like a start at
+/// sign-in, so the harness can measure a lock with no webview open (ADR 0008).
 #[cfg(debug_assertions)]
 fn start_without_dashboard() -> bool {
     std::env::var("KEYCLEAN_E2E_NO_DASHBOARD").is_ok_and(|v| v == "1")
@@ -457,13 +467,37 @@ fn start_without_dashboard() -> bool {
     false
 }
 
+/// The "Start minimized" setting. Debug builds only: `KEYCLEAN_E2E_START_MINIMIZED=0` or `=1`
+/// overrides it, so the harness doesn't depend on the real settings file (ADR 0008).
+fn start_minimized(settings: &SettingsState) -> bool {
+    #[cfg(debug_assertions)]
+    match std::env::var("KEYCLEAN_E2E_START_MINIMIZED").as_deref() {
+        Ok("0") => return false,
+        Ok("1") => return true,
+        _ => {}
+    }
+    settings.current().start_minimized()
+}
+
+/// Whether this launch stayed in the tray without opening the dashboard (a start at sign-in with
+/// "Start minimized" on). Problems found at startup are then told by a notification, since no
+/// window shows them (ADR 0018).
+pub(crate) struct StartedHidden(pub bool);
+
+pub(crate) fn started_hidden(app: &AppHandle) -> bool {
+    app.try_state::<StartedHidden>().is_some_and(|s| s.0)
+}
+
 /// Builds and runs the Tauri application. Exits the process with code 1 if Tauri fails.
 pub fn run() {
     let app = tauri::Builder::default()
         // Must be registered first (invariant 12: single instance).
-        // A second launch opens the dashboard of the running instance, then exits.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            dashboard::open(app);
+        // A second launch opens the dashboard of the running instance, then exits. A second
+        // launch at sign-in (`--autostart`) leaves the running instance as it is.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if startup::second_launch_opens_dashboard(Launch::from_args(&args)) {
+                dashboard::open(app);
+            }
         }))
         // Used from Rust only: no window is granted its commands (src-tauri/capabilities/).
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -472,6 +506,9 @@ pub fn run() {
         // Used from Rust only, like the store. Its hidden window exists before `setup` runs, so
         // the close guard covers it.
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // Windows notifications (ADR 0018), shown from Rust only, like the store. It adds a small
+        // script to every webview that replaces `window.Notification`; no window may call it.
+        .plugin(tauri_plugin_notification::init())
         // tao registers the app for Raw Input from every mouse and keyboard by default, which
         // would let the app see input while its window has focus. `Always` removes that
         // registration (invariant 4; the engine process registers its own, during a lock only).
@@ -492,10 +529,30 @@ pub fn run() {
             // Without a tray icon there would be no way back once the dashboard closes, so
             // closing the last window then exits, as before M8.
             let mode = guard(&app.state::<StatusStore>().0).tray_mode();
-            match tray::create(app.handle(), mode) {
-                Ok(()) => app.state::<KeepInTray>().0.store(true, Ordering::SeqCst),
-                Err(e) => eprintln!("[keyclean] tray icon failed: {e}"),
-            }
+            let tray_ok = match tray::create(app.handle(), mode) {
+                Ok(()) => {
+                    app.state::<KeepInTray>().0.store(true, Ordering::SeqCst);
+                    true
+                }
+                Err(e) => {
+                    eprintln!("[keyclean] tray icon failed: {e}");
+                    false
+                }
+            };
+            // A start at sign-in with "Start minimized" on stays in the tray, if there is one
+            // (§29, ADR 0018); every other launch opens the dashboard (ADR 0016).
+            // `args_os`: an argument that isn't valid Unicode must not stop KeyClean.
+            let launch = Launch::from_args(
+                std::env::args_os()
+                    .skip(1)
+                    .map(|arg| arg.to_string_lossy().into_owned()),
+            );
+            let minimized = start_minimized(&app.state::<SettingsState>());
+            let open_dashboard =
+                startup::opens_dashboard(launch, minimized, tray_ok) && !start_without_dashboard();
+            app.manage(StartedHidden(
+                launch == Launch::Autostart && !open_dashboard,
+            ));
             // `setup` runs on the main thread, which owns the hidden helper windows. After the
             // tray, so its hidden window is guarded too.
             let handle = app.handle().clone();
@@ -504,9 +561,14 @@ pub fn run() {
             // Registers once the event loop runs; a shortcut another app holds is shown, not
             // fatal.
             shortcut::start(app.handle());
-            // A manual launch opens the dashboard (start minimized is M10, §29).
-            if !start_without_dashboard() {
+            if open_dashboard {
                 dashboard::open(app.handle());
+            } else {
+                eprintln!("[keyclean] startup: no dashboard ({launch:?})");
+                let engine_available = guard(&app.state::<StatusStore>().0).engine_available();
+                if started_hidden(app.handle()) && !engine_available {
+                    notify::problem(app.handle(), Toast::EngineFailedToStart);
+                }
             }
             Ok(())
         })
@@ -525,7 +587,11 @@ pub fn run() {
             shortcut::set_shortcut_action,
             shortcut::begin_shortcut_capture,
             shortcut::end_shortcut_capture,
-            shortcut::retry_shortcut
+            shortcut::retry_shortcut,
+            general::get_general_settings,
+            general::set_start_with_windows,
+            general::set_start_minimized,
+            general::set_notifications
         ])
         .build(tauri::generate_context!());
 
@@ -646,6 +712,10 @@ mod tests {
             "allow-begin-shortcut-capture",
             "allow-end-shortcut-capture",
             "allow-retry-shortcut",
+            "allow-get-general-settings",
+            "allow-set-start-with-windows",
+            "allow-set-start-minimized",
+            "allow-set-notifications",
         ] {
             assert!(!overlay.iter().any(|p| p == denied), "overlay has {denied}");
         }
@@ -662,10 +732,10 @@ mod tests {
         }
     }
 
-    /// The settings file and the start shortcut belong to Rust: no window may call the store or
-    /// global-shortcut plugins (ADR 0015, 0017).
+    /// The settings file, the start shortcut and notifications belong to Rust: no window may
+    /// call the store, global-shortcut or notification plugins (ADR 0015, 0017, 0018).
     #[test]
-    fn no_window_can_use_the_store_or_shortcut_plugins() {
+    fn no_window_can_use_the_rust_only_plugins() {
         for capability in [
             include_str!("../capabilities/main.json"),
             include_str!("../capabilities/overlay.json"),
@@ -678,6 +748,8 @@ mod tests {
                     .unwrap_or_default();
                 assert!(!name.starts_with("store:"), "{name}");
                 assert!(!name.starts_with("global-shortcut:"), "{name}");
+                assert!(!name.starts_with("notification:"), "{name}");
+                assert!(!name.starts_with("autostart:"), "{name}");
             }
         }
     }

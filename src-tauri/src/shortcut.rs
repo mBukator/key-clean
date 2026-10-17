@@ -23,6 +23,7 @@ use std::str::FromStr;
 use std::sync::Mutex;
 
 use keyclean_win::LockTargets;
+use keyclean_win::keyclean_core::notify::Toast;
 use keyclean_win::keyclean_core::shortcut::{Key, Modifier, Shortcut, ShortcutAction};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -241,6 +242,14 @@ pub fn start(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         change(&app, reconcile).await;
+        // With no window open after a start at sign-in, only a notification can say the
+        // shortcut isn't working (ADR 0018).
+        let unavailable = app
+            .try_state::<ShortcutState>()
+            .is_some_and(|state| guard(&state.inner).error.is_some());
+        if unavailable && crate::started_hidden(&app) {
+            crate::notify::problem(&app, Toast::ShortcutUnavailable);
+        }
     });
 }
 

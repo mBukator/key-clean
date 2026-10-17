@@ -4,7 +4,7 @@
 //! minimum size stay in `tauri.conf.json` with `"create": false`, so Tauri doesn't build it at
 //! startup; [`open`] builds it from that config.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -27,18 +27,34 @@ impl Tab {
     }
 }
 
-/// Set while the dashboard is being built, so a second request doesn't build another.
-pub struct Building(AtomicBool);
+/// Requests to open the dashboard: the build in flight, so a second request doesn't build
+/// another, and how many requests haven't finished, so a notification isn't shown while the
+/// dashboard is about to appear (ADR 0018).
+pub struct Building {
+    building: AtomicBool,
+    requested: AtomicUsize,
+}
 
 impl Building {
     pub fn new() -> Self {
-        Building(AtomicBool::new(false))
+        Building {
+            building: AtomicBool::new(false),
+            requested: AtomicUsize::new(0),
+        }
     }
 }
 
 /// Whether the dashboard window exists.
 pub fn is_open(app: &AppHandle) -> bool {
     app.get_webview_window(MAIN_WINDOW).is_some()
+}
+
+/// Whether the dashboard exists or a request to open it hasn't finished yet.
+pub fn is_open_or_opening(app: &AppHandle) -> bool {
+    is_open(app)
+        || app
+            .try_state::<Building>()
+            .is_some_and(|b| b.requested.load(Ordering::SeqCst) > 0)
 }
 
 /// Brings the dashboard to the front if it is open. Does nothing otherwise.
@@ -65,27 +81,38 @@ pub fn open_on(app: &AppHandle, tab: Tab) {
 /// single-instance callback) or a synchronous command deadlocks on Windows [docs: tauri 2.12.1
 /// `WebviewWindowBuilder::new`]. Safe to call from any thread.
 fn open_with(app: &AppHandle, tab: Option<Tab>) {
+    // Counted before the task starts, so a caller that checks right after sees it.
+    if let Some(building) = app.try_state::<Building>() {
+        building.requested.fetch_add(1, Ordering::SeqCst);
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        if is_open(&app) {
-            if let Some(tab) = tab {
-                let _ = app.emit_to(MAIN_WINDOW, OPEN_TAB_EVENT, tab.id());
-            }
-            focus(&app);
-            return;
-        }
-        let Some(building) = app.try_state::<Building>() else {
-            return;
-        };
-        if building.0.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let built = build(&app, tab);
-        building.0.store(false, Ordering::SeqCst);
-        if let Err(e) = built {
-            eprintln!("[keyclean] couldn't open the dashboard: {e}");
+        open_now(&app, tab);
+        if let Some(building) = app.try_state::<Building>() {
+            building.requested.fetch_sub(1, Ordering::SeqCst);
         }
     });
+}
+
+fn open_now(app: &AppHandle, tab: Option<Tab>) {
+    if is_open(app) {
+        if let Some(tab) = tab {
+            let _ = app.emit_to(MAIN_WINDOW, OPEN_TAB_EVENT, tab.id());
+        }
+        focus(app);
+        return;
+    }
+    let Some(building) = app.try_state::<Building>() else {
+        return;
+    };
+    if building.building.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let built = build(app, tab);
+    building.building.store(false, Ordering::SeqCst);
+    if let Err(e) = built {
+        eprintln!("[keyclean] couldn't open the dashboard: {e}");
+    }
 }
 
 fn build(app: &AppHandle, tab: Option<Tab>) -> tauri::Result<()> {
