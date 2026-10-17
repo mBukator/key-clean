@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - During a keyboard lock, the lock screen and the dashboard now say when an administrator window is in front, because typing there still gets through. KeyClean checks once per countdown second, only during a lock (ADR 0005, 0017).
 - Harness checks S45-S48 (shortcut lock, keys held through the lock start, a second press during a mouse-only lock, a shortcut another program holds), the M9 manual test, research note and ADR 0017.
 
+- Start with Windows (M10): Settings → General turns it on or off for the current user. It writes one quoted entry of its own, never for every user, and never undoes a "Disable" from Task Manager. Release builds only (ADR 0018).
+- Start minimized: a start at sign-in stays in the tray with no window (on by default). A manual launch still opens the dashboard.
+- Notifications (can be turned off): how a lock ended when no dashboard is open, the start shortcut or the engine failing at a start at sign-in, and an engine that can't be restarted. None during a lock, none for your own unlock, never key data.
+- Harness checks S49-S51 (a start at sign-in, a second start at sign-in, a toast after a lock), the M10 manual test, research note and ADR 0018.
+
 ### Changed
 
 - Locking now waits for the overlay, so `lock_input` returns once the lock has been requested or the overlay failed.

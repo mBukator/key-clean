@@ -13,24 +13,24 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 
 ## Current status
 
-| Milestone                                      | Phase       | Status                                      |
-| ---------------------------------------------- | ----------- | ------------------------------------------- |
-| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                    |
-| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                    |
-| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                    |
-| M3 Safety hardening                            | §53 Phase 2 | **done**                                    |
-| M4 Device detection                            | §52 Phase 1 | **done**                                    |
-| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                    |
-| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                    |
-| M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
-| M8 System tray                                 | §55 Phase 4 | **done**                                    |
-| M9 Global shortcut                             | §55 Phase 4 | **done**                                    |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
-| M12 Open-source release                        | §56 Phase 5 | not started                                 |
-| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
-| M14 Advanced device management                 | §58 Phase 7 | not started                                 |
-| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable |
+| Milestone                                      | Phase       | Status                                       |
+| ---------------------------------------------- | ----------- | -------------------------------------------- |
+| M0 Scaffold and tooling                        | §51 Phase 0 | **done**                                     |
+| M1 Keyboard lock + emergency unlock + deadline | §51-§52     | **done**                                     |
+| M2 Timer and automatic unlock                  | §52 Phase 1 | **done**                                     |
+| M3 Safety hardening                            | §53 Phase 2 | **done**                                     |
+| M4 Device detection                            | §52 Phase 1 | **done**                                     |
+| M5 Mouse and touchpad lock                     | §52 Phase 1 | **done**                                     |
+| M6 Full-screen overlay                         | §54 Phase 3 | **done**                                     |
+| M7 MVP dashboard                               | §54 Phase 3 | **done**                                     |
+| M8 System tray                                 | §55 Phase 4 | **done**                                     |
+| M9 Global shortcut                             | §55 Phase 4 | **done**                                     |
+| M10 Start with Windows + notifications         | §55 Phase 4 | code-complete - awaiting manual verification |
+| M11 Packaging                                  | §55 Phase 4 | not started                                  |
+| M12 Open-source release                        | §56 Phase 5 | not started                                  |
+| M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                  |
+| M14 Advanced device management                 | §58 Phase 7 | not started                                  |
+| (later) Optional advanced features             | §59 Phase 8 | not planned - only after the core is stable  |
 
 ---
 
@@ -490,15 +490,37 @@ Acceptance:
 
 ### M10 - Start with Windows and notifications
 
-Status: not started. Manual test: `docs/testing/manual/M10.md`.
+Status: **code-complete - awaiting manual verification**. Verification: `cargo run -p keyclean-e2e`
+(S1-S51) and `docs/testing/manual/M10.md`. Decisions: ADR 0018 (deviates from the planned
+autostart plugin). Research: `docs/research/m10-startup-notifications.md`.
 
-Scope: autostart plugin (§29), notifications for session start/end and permission problems (§31)
-(toasts only work in installed builds).
+Done in code:
+
+- [x] Start with Windows through one quoted value of our own under the current user's `Run` key,
+      written only from the Settings switch and only in release builds; Task Manager's "Disable"
+      is read, never overwritten (ADR 0018; `tauri-plugin-autostart` rejected after reading its
+      source).
+- [x] Start minimized: `--autostart` stays in the tray when the tray icon exists; a second start
+      at sign-in leaves the running KeyClean alone.
+- [x] Notifications through `tauri-plugin-notification`, from Rust only: how a lock ended with no
+      dashboard open, problems at a start at sign-in, an engine that can't restart; never during a
+      lock. Shown as Windows PowerShell until the M11 installer adds the shortcut.
+- [x] Settings → General (plain styling); settings `startMinimized` and `notifications`.
+- [x] Harness S49-S51.
+- [ ] Settings → General design from Max.
+
+Scope: start with Windows (§29) and start minimized, notifications for how a lock ended and for
+problems (§31), Settings → General (§32).
+
+For M11: the Start menu shortcut must carry the AppUserModelID `io.github.mbukator.keyclean`
+(toasts), the installer offers "Start KeyClean when I sign in" (ticked), and the uninstaller
+removes the `Run` and `StartupApproved` values.
 
 Acceptance:
 
-- [ ] Startup behavior works
-- [ ] Notifications work
+- [ ] Startup behavior works (§60 "Windows"; S49, S50, M10 steps 6-12)
+- [ ] Notifications work (§60 "Windows"; S51, M10 steps 2-5)
+- [ ] Idle cost after sign-in recorded (M10 step 9)
 
 ### M11 - Packaging
 
