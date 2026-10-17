@@ -63,7 +63,11 @@ function startNotes(general: General): string[] {
     }
     if (general.startWithWindows === "disabledInTaskManager") {
         notes.push(t("settings.startWithWindows.disabledInTaskManager"));
-    } else if (general.startWithWindows === "otherCopy") {
+    } else if (
+        general.startWithWindows === "otherCopy" &&
+        general.startWithWindowsAvailable
+    ) {
+        // It asks the user to turn the switch on, which a dev build can't.
         notes.push(t("settings.startWithWindows.otherCopy"));
     }
     return notes;
