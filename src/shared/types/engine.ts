@@ -97,6 +97,21 @@ export const STATUS_EVENT = "engine-status";
 /** Name of the event the shell emits to the main window when the device list changes. */
 export const DEVICES_EVENT = "devices-changed";
 
+/** Where starting with Windows stands; `unknown` when the registry couldn't be read. */
+export type StartWithWindows =
+    "on" | "off" | "disabledInTaskManager" | "otherCopy" | "unknown";
+
+/** Mirrors `GeneralDto` in src-tauri/src/general.rs (Settings → General, ADR 0018). */
+export interface GeneralSettings {
+    startWithWindows: StartWithWindows;
+    /** Whether this build may change it: release builds only. */
+    startWithWindowsAvailable: boolean;
+    startMinimized: boolean;
+    notifications: boolean;
+    /** Why the startup entry couldn't be read or changed. */
+    error: ErrorInfo | null;
+}
+
 /** What the start shortcut does (§28). */
 export type ShortcutAction = "keyboard" | "selected";
 
