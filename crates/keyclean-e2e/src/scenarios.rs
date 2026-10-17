@@ -3818,15 +3818,26 @@ fn notification_after_lock(ctx: &mut Ctx<'_>) -> Outcome {
             return Err("the plugin couldn't prepare the toast; log: e2e-S51-app.log".into());
         }
         // A window the toast added would get taskkill's WM_CLOSE unguarded, and a clean exit
-        // wouldn't show it: compare the app's hidden windows with those during the lock.
+        // wouldn't show it: look for windows that weren't there during the lock. Windows that
+        // only existed during the lock may be gone; that's fine.
         let after: Vec<String> = system::window_classes(pid)
             .into_iter()
             .filter(|class| class != APP_WINDOW_CLASS)
             .collect();
-        if after != before {
+        let mut remaining = before.clone();
+        let mut added = Vec::new();
+        for class in &after {
+            match remaining.iter().position(|c| c == class) {
+                Some(at) => {
+                    remaining.remove(at);
+                }
+                None => added.push(class.clone()),
+            }
+        }
+        if !added.is_empty() {
             return Err(format!(
-                "the app's hidden windows changed after the toast: during the lock {before:?}, \
-                 after {after:?}; a new one isn't covered by the close guard"
+                "the app has new hidden windows after the toast: {added:?} (during the lock: \
+                 {before:?}); a new one isn't covered by the close guard"
             ));
         }
         expect_app_running(&mut app.0, "its toast was shown")?;
@@ -3838,8 +3849,9 @@ fn notification_after_lock(ctx: &mut Ctx<'_>) -> Outcome {
         expect_probes_pass(ctx.observer)?;
         expect_no_stuck_keys()?;
         Ok(format!(
-            "3 s lock ended by its timer and asked for the toast; {} hidden windows, unchanged; \
-             taskkill exit after {} ms, no keyclean.exe left {} ms later",
+            "3 s lock ended by its timer and asked for the toast; no new hidden window ({} after, \
+             gone since the lock: {remaining:?}); taskkill exit after {} ms, no keyclean.exe left \
+             {} ms later",
             after.len(),
             exited.as_millis(),
             left.as_millis()
