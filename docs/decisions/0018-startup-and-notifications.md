@@ -1,11 +1,12 @@
 # ADR 0018 - Start with Windows and notifications
 
-- Status: Accepted in part, 2026-10-17. Max approved the M10 plan (D1 option C, D2 option ii,
-  D3-D11 as proposed). Pending Max's OK, settled during the build: "Start minimized" stays
-  switchable when Start with Windows is off; the problem toasts follow the "Show notifications"
-  switch; the debug-only `KEYCLEAN_E2E_START_MINIMIZED` and `KEYCLEAN_E2E_NOTIFICATIONS`
-  variables; the Start with Windows switch showing on (with a note) while Task Manager has it
-  turned off, so it can still remove the entry.
+- Status: Accepted, 2026-10-18. Max approved the M10 plan (D1 option C, D2 option ii, D3-D11 as
+  proposed) on 2026-10-17, and on 2026-10-18 the points settled during the build: "Start
+  minimized" stays switchable when Start with Windows is off; the problem toasts follow the
+  "Show notifications" switch; the debug-only `KEYCLEAN_E2E_START_MINIMIZED` and
+  `KEYCLEAN_E2E_NOTIFICATIONS` variables; the Start with Windows switch showing on (with a note)
+  while Task Manager has it turned off, so it can still remove the entry; a dev build hiding the
+  "another copy" note; the extra roadmap item "idle cost recorded". Manual verification pending.
 - Deciders: Max
 - Related: M10; §29, §30, §31, §32 "General", §46; invariants 3, 4, 9, 12; privacy invariants;
   ADR 0001 (idle cost), 0016 (tray, window lifecycle), 0017 (global shortcut);
