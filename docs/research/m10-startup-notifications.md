@@ -20,9 +20,11 @@ tauri-plugin-notification 2.7.0, notify-rust 4.18.2, tauri-winrt-notification 0.
 - Task Manager → Startup apps records a "Disable" under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`, a binary value
   with the same name: first byte 2 or 6 when enabled, 3 or 7 when disabled, then a timestamp.
-  [undocumented; checked in M10.md]
-- Whether Windows keeps a `StartupApproved` value after its `Run` value is deleted (so a later
-  entry with the same name starts out disabled) [assumption; M10.md step 11].
+  [undocumented; tested 2026-10-19: M10.md step 11 read `{3, 0, 0, 0…}` after a Disable, and
+  KeyClean showed the Task Manager note]
+- Windows keeps the `StartupApproved` value after its `Run` value is deleted, so a later entry
+  with the same name starts out disabled. [tested 2026-10-19: M10.md step 11] KeyClean shows
+  that with the Task Manager note; the M11 uninstaller removes the value.
 
 ## Registry calls (windows 0.62.2)
 
@@ -92,4 +94,23 @@ tauri-plugin-notification 2.7.0, notify-rust 4.18.2, tauri-winrt-notification 0.
 
 ## Measurements
 
-Filled in from M10.md.
+From M10.md, 2026-10-18 and 2026-10-19 (Windows 11 25H2, ASUS laptop).
+
+- Harness S1-S51: 45 passed, 1 failed in 332 s; the failure (S3, one chord key event let
+  through) passed on rerun and touches no M10 code. S49-S51 passed. [tested]
+- Toasts from `target\debug` show as Windows PowerShell, after the overlay is gone, and none
+  with the dashboard open, after Ctrl+Alt+K, or with notifications off. [tested: steps 2-5]
+- The release build's switch wrote `"<exe>" --autostart` under HKCU only. [tested: step 7]
+- After sign-in KeyClean was in the tray with no window; with Start minimized off the
+  dashboard opened. [tested: steps 8, 10]
+- Idle after sign-in, one reading (the second, 60 s later, wasn't taken), dashboard closed:
+
+| Process   | CPU since start | Working set | Private bytes |
+| --------- | --------------- | ----------- | ------------- |
+| PID 34660 | 0.02 s          | 15.2 MB     | 1.8 MB        |
+| PID 37744 | 0.17 s          | 31.0 MB     | 5.1 MB        |
+
+Which PID is the app and which the engine wasn't recorded. [tested: step 9]
+
+- Not checked: whether a toast takes the focus (step 2's typing check), Do Not Disturb
+  (optional step 15), a shortcut taken at sign-in (optional step 14).

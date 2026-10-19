@@ -6,7 +6,8 @@
   "Show notifications" switch; the debug-only `KEYCLEAN_E2E_START_MINIMIZED` and
   `KEYCLEAN_E2E_NOTIFICATIONS` variables; the Start with Windows switch showing on (with a note)
   while Task Manager has it turned off, so it can still remove the entry; a dev build hiding the
-  "another copy" note; the extra roadmap item "idle cost recorded". Manual verification pending.
+  "another copy" note; the extra roadmap item "idle cost recorded". Verified by Max
+  2026-10-19 (harness S1-S51 and M10.md).
 - Deciders: Max
 - Related: M10; §29, §30, §31, §32 "General", §46; invariants 3, 4, 9, 12; privacy invariants;
   ADR 0001 (idle cost), 0016 (tray, window lifecycle), 0017 (global shortcut);
