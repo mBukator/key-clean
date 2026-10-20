@@ -1,6 +1,7 @@
 //! Data sent to the webview. Mirrors `src/shared/types/engine.ts`. Contains no key data.
 
 use keyclean_win::keyclean_core::devices::{Capability, DeviceKind, InputDevice};
+use keyclean_win::keyclean_core::notify::Toast;
 use keyclean_win::keyclean_core::settings::{
     DurationError, MAX_MAX_LOCK_MINUTES, MIN_DURATION, MIN_MAX_LOCK_MINUTES, Settings,
 };
@@ -78,6 +79,28 @@ impl ErrorDto {
         }
     }
 
+    /// The startup entry couldn't be read (`read`) or changed (ADR 0018).
+    pub fn autostart(read: bool, details: String) -> Self {
+        ErrorDto {
+            message_key: if read {
+                "error.autostart_read"
+            } else {
+                "error.autostart"
+            }
+            .to_owned(),
+            details,
+        }
+    }
+
+    /// Starting with Windows is refused in debug builds, so a dev build never registers
+    /// `target\debug` (ADR 0018).
+    pub fn autostart_dev_build() -> Self {
+        ErrorDto {
+            message_key: "error.autostart_dev".to_owned(),
+            details: "debug builds don't change the startup entry".to_owned(),
+        }
+    }
+
     /// The overlay couldn't be opened or closed before it confirmed, so nothing was locked.
     pub fn overlay_failed(details: String) -> Self {
         ErrorDto {
@@ -140,6 +163,10 @@ pub struct StatusDto {
     /// over a later notice. Cleared when the next lock starts.
     #[serde(skip)]
     elevated_warned: bool,
+    /// Why the last lock ended, as the user should read it (a lost overlay is the user request
+    /// the app made; a full-length lock is its timer). For the notification (ADR 0018).
+    #[serde(skip)]
+    last_end: Option<EndReason>,
 }
 
 impl StatusDto {
@@ -157,7 +184,18 @@ impl StatusDto {
             overlay_lost: false,
             session_meets_hard_deadline: false,
             elevated_warned: false,
+            last_end: None,
         }
+    }
+
+    /// The notification for how the last lock ended, if it gets one (ADR 0018). Unknown targets
+    /// read as the keyboard.
+    pub fn toast_after_lock(&self) -> Option<Toast> {
+        let targets = self.targets.map_or(LockTargets::KEYBOARD, |t| LockTargets {
+            keyboard: t.keyboard,
+            mouse: t.mouse,
+        });
+        Toast::after_lock(self.last_end?, targets)
     }
 
     /// Whether no lock is running or starting.
@@ -214,6 +252,11 @@ impl StatusDto {
         self.targets.is_some_and(|t| !t.keyboard)
     }
 
+    /// Whether an engine is running to take a lock.
+    pub fn engine_available(&self) -> bool {
+        self.engine_available
+    }
+
     /// Records whether the engine started, and why not.
     pub fn set_engine(&mut self, available: bool, error: Option<ErrorDto>) {
         self.engine_available = available;
@@ -257,6 +300,7 @@ impl StatusDto {
                 if status.state == SessionState::Starting {
                     self.error = None;
                     self.last_end_reason = None;
+                    self.last_end = None;
                 }
                 let was_idle = self.state == state_name(SessionState::Idle);
                 if was_idle && matches!(status.state, SessionState::Starting | SessionState::Locked)
@@ -281,6 +325,10 @@ impl StatusDto {
             EngineEvent::SessionEnded { reason } => {
                 let overlay_lost = std::mem::take(&mut self.overlay_lost);
                 let full_length = std::mem::take(&mut self.session_meets_hard_deadline);
+                self.last_end = Some(match reason {
+                    EndReason::HardDeadline if full_length => EndReason::Timeout,
+                    _ => *reason,
+                });
                 self.last_end_reason = Some(match reason {
                     EndReason::UserRequest if overlay_lost => OVERLAY_LOST,
                     // The lock ran its full length, which is also its hard deadline.
@@ -734,6 +782,57 @@ mod tests {
             reason: EndReason::UserRequest,
         });
         assert_eq!(dto.last_end_reason, Some("userRequest"));
+    }
+
+    #[test]
+    fn the_toast_reads_the_end_as_the_user_does() {
+        let ended = |full_length: bool, reason: EndReason| {
+            let mut dto = StatusDto::initial(false);
+            dto.lock_requested(full_length);
+            dto.apply(&status(SessionState::Locked));
+            dto.apply(&EngineEvent::SessionEnded { reason });
+            dto.toast_after_lock()
+        };
+        assert_eq!(
+            ended(true, EndReason::HardDeadline),
+            Some(Toast::CleaningComplete(LockTargets::KEYBOARD)),
+            "a full-length lock is complete"
+        );
+        assert_eq!(
+            ended(false, EndReason::HardDeadline),
+            Some(Toast::SafetyLimit)
+        );
+        assert_eq!(ended(false, EndReason::Emergency), None);
+    }
+
+    #[test]
+    fn a_new_lock_clears_the_last_toast() {
+        let mut dto = StatusDto::initial(false);
+        assert_eq!(dto.toast_after_lock(), None);
+        dto.apply(&status(SessionState::Locked));
+        dto.apply(&EngineEvent::SessionEnded {
+            reason: EndReason::Timeout,
+        });
+        assert!(dto.toast_after_lock().is_some());
+        dto.apply(&status(SessionState::Starting));
+        assert_eq!(dto.toast_after_lock(), None);
+    }
+
+    #[test]
+    fn every_autostart_error_has_a_ui_string() {
+        let strings: std::collections::HashMap<String, String> =
+            serde_json::from_str(include_str!("../../locales/en/strings.json")).unwrap();
+        for error in [
+            ErrorDto::autostart(true, String::new()),
+            ErrorDto::autostart(false, String::new()),
+            ErrorDto::autostart_dev_build(),
+        ] {
+            assert!(
+                strings.contains_key(&error.message_key),
+                "missing {}",
+                error.message_key
+            );
+        }
     }
 
     #[test]

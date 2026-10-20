@@ -25,7 +25,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M7 MVP dashboard                               | §54 Phase 3 | **done**                                    |
 | M8 System tray                                 | §55 Phase 4 | **done**                                    |
 | M9 Global shortcut                             | §55 Phase 4 | **done**                                    |
-| M10 Start with Windows + notifications         | §55 Phase 4 | not started                                 |
+| M10 Start with Windows + notifications         | §55 Phase 4 | **done**                                    |
 | M11 Packaging                                  | §55 Phase 4 | not started                                 |
 | M12 Open-source release                        | §56 Phase 5 | not started                                 |
 | M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
@@ -490,15 +490,46 @@ Acceptance:
 
 ### M10 - Start with Windows and notifications
 
-Status: not started. Manual test: `docs/testing/manual/M10.md`.
+Status: **done** (verified by Max, 2026-10-19). Verification: `cargo run -p keyclean-e2e`
+(S1-S51) and `docs/testing/manual/M10.md`. Decisions: ADR 0018 (deviates from the planned
+autostart plugin). Research: `docs/research/m10-startup-notifications.md`.
 
-Scope: autostart plugin (§29), notifications for session start/end and permission problems (§31)
-(toasts only work in installed builds).
+Harness, 2026-10-18: 45 passed, 1 failed in 332 s. S3 let one chord key event through once and
+passed on rerun; M10 changed no engine code. S49-S51 passed.
+
+Manual, 2026-10-18 and 2026-10-19: steps 1-8 and 10-12 passed; step 9 recorded one idle reading
+(0.02 and 0.17 CPU s since start, 15.2 and 31.0 MB working set, 1.8 and 5.1 MB private); optional
+steps 13-15 skipped. Step 11 found that Task Manager's "Disable" outlives the `Run` value, so
+the switch then comes back on with the Task Manager note. Not checked: whether a toast takes the
+focus (step 2's typing check).
+
+Done in code:
+
+- [x] Start with Windows through one quoted value of our own under the current user's `Run` key,
+      written only from the Settings switch and only in release builds; Task Manager's "Disable"
+      is read, never overwritten (ADR 0018; `tauri-plugin-autostart` rejected after reading its
+      source).
+- [x] Start minimized: `--autostart` stays in the tray when the tray icon exists; a second start
+      at sign-in leaves the running KeyClean alone.
+- [x] Notifications through `tauri-plugin-notification`, from Rust only: how a lock ended with no
+      dashboard open, problems at a start at sign-in, an engine that can't restart; never during a
+      lock. Shown as Windows PowerShell until the M11 installer adds the shortcut.
+- [x] Settings → General (plain styling); settings `startMinimized` and `notifications`.
+- [x] Harness S49-S51.
+- [ ] Settings → General design from Max.
+
+Scope: start with Windows (§29) and start minimized, notifications for how a lock ended and for
+problems (§31), Settings → General (§32).
+
+For M11: the Start menu shortcut must carry the AppUserModelID `io.github.mbukator.keyclean`
+(toasts), the installer offers "Start KeyClean when I sign in" (ticked), and the uninstaller
+removes the `Run` and `StartupApproved` values.
 
 Acceptance:
 
-- [ ] Startup behavior works
-- [ ] Notifications work
+- [x] Startup behavior works (§60 "Windows"; S49, S50, M10 steps 6-12)
+- [x] Notifications work (§60 "Windows"; S51, M10 steps 2-5)
+- [x] Idle cost after sign-in recorded (M10 step 9, one reading)
 
 ### M11 - Packaging
 

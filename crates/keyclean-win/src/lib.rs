@@ -3,6 +3,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod autostart;
 pub mod client;
 mod close_guard;
 mod desktop;
@@ -24,6 +25,7 @@ mod taskbar;
 pub mod testkit;
 mod watchdog;
 
+pub use autostart::{AutostartError, autostart_state, disable_autostart, enable_autostart};
 pub use client::EngineClient;
 pub use close_guard::{guard_dashboard_close, guard_helper_windows};
 pub use desktop::is_on_current_desktop;

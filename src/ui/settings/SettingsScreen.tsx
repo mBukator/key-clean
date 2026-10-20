@@ -5,6 +5,7 @@ import { t } from "../../shared/localization/t";
 import type { ErrorInfo, LockOptions, ShortcutInfo } from "../../shared/types/engine";
 import { ErrorBlock, toErrorInfo } from "../../shared/ui/ErrorBlock";
 import { MONO_FONT } from "../../shared/ui/font";
+import { GeneralSettings } from "./GeneralSettings";
 import { ShortcutSettings } from "./ShortcutSettings";
 
 interface SettingsScreenProps {
@@ -13,7 +14,7 @@ interface SettingsScreenProps {
     shortcut: ShortcutInfo | null;
 }
 
-/** Settings (§32): Shortcuts (M9) and Safety → Maximum lock duration (M7). */
+/** Settings (§32): General (M10), Shortcuts (M9) and Safety → Maximum lock duration (M7). */
 export function SettingsScreen({ options, onOptions, shortcut }: SettingsScreenProps) {
     const inputId = useId();
     const hintId = useId();
@@ -48,6 +49,7 @@ export function SettingsScreen({ options, onOptions, shortcut }: SettingsScreenP
 
     return (
         <div className="flex flex-col gap-6 px-4 py-5 sm:px-8 sm:py-6">
+            <GeneralSettings />
             {shortcut && <ShortcutSettings shortcut={shortcut} />}
             <section className="flex flex-col gap-3">
                 <h2
