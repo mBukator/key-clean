@@ -1,0 +1,31 @@
+name: Installer
+
+# Builds the NSIS installer (M11, ADR 0019) and uploads it as an artifact, for testing on another
+# machine such as the Windows 10 VM. Manual trigger only: release builds take several minutes and
+# releases come with M12. The installer is unsigned (ADR 0019).
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    installer:
+        runs-on: windows-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.3.11
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: bun install --frozen-lockfile
+            # Runs `bun run build` first (beforeBuildCommand), then the release exe and the installer.
+            - run: bun tauri build
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: keyclean-installer
+                  path: target/release/bundle/nsis/*-setup.exe
+                  if-no-files-found: error
+                  retention-days: 14
