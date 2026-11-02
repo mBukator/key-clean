@@ -1025,7 +1025,7 @@ const ENGINE_EXIT_WAIT: Duration = Duration::from_secs(5);
 
 /// Counts running `keyclean.exe` processes (the app and its engine process). Uses `tasklist` in
 /// CSV form and matches the image name, not its localized "no tasks" message.
-fn keyclean_processes() -> Result<usize, String> {
+pub fn keyclean_processes() -> Result<usize, String> {
     let out = Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq keyclean.exe", "/FO", "CSV", "/NH"])
         .output()

@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+keyclean-core = { path = "../keyclean-core" }
 keyclean-win = { path = "../keyclean-win", features = ["testkit"] }
 
 [lints]

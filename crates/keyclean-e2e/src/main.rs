@@ -1,4 +1,4 @@
-//! Automated end-to-end checks for KeyClean's milestones M1-M10 (ADR 0008).
+//! Automated end-to-end checks for KeyClean's milestones M1-M11 (ADR 0008).
 //!
 //! **This engages real keyboard and mouse locks.** Run it by hand only, never from `cargo test`
 //! or by an agent. Each lock is clamped to the development caps (15 s, 20 s hard deadline), the
@@ -11,7 +11,15 @@
 //! cargo build -p keyclean-win --example lock_smoke
 //! bun run build && cargo build -p keyclean --features tauri/custom-protocol
 //! cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--overlay-latency] [--no-dashboard]
+//! bun tauri build && cargo run -p keyclean-e2e -- --installer [SETUP.exe]
 //! ```
+//!
+//! `--installer` runs only S52-S53 (M11): a silent install into a temporary folder, then a
+//! silent uninstall with the installed KeyClean running (ADR 0019). No lock is engaged. It
+//! refuses to run while KeyClean is installed or another copy starts at sign-in.
+//!
+//! Every run first checks that no `keyclean.exe` is running: a running copy (an installed one
+//! started at sign-in included) would take over the harness's launches (single instance).
 //!
 //! `--overlay-latency` adds S41: ten 1 s locks in one app launch, reporting how long the overlay
 //! takes to confirm, cold and warm (about 45 s more). `--no-dashboard` runs S41 instead with the
@@ -27,6 +35,7 @@
 #![forbid(unsafe_code)]
 
 mod harness;
+mod installer;
 mod report;
 mod scenarios;
 
@@ -62,6 +71,8 @@ struct Options {
     overlay_latency: bool,
     no_dashboard: bool,
     only: Option<Vec<String>>,
+    /// `--installer`, with the installer's path if given.
+    installer: Option<Option<std::path::PathBuf>>,
 }
 
 impl Options {
@@ -75,8 +86,9 @@ impl Options {
             overlay_latency: false,
             no_dashboard: false,
             only: None,
+            installer: None,
         };
-        let mut args = std::env::args().skip(1);
+        let mut args = std::env::args().skip(1).peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--only" => {
@@ -97,15 +109,33 @@ impl Options {
                     options.overlay_latency = true;
                     options.no_dashboard = true;
                 }
+                "--installer" => {
+                    let path = match args.peek() {
+                        Some(next) if !next.starts_with('-') => args.next().map(Into::into),
+                        _ => None,
+                    };
+                    options.installer = Some(path);
+                }
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown option {other}\n\n{USAGE}")),
             }
+        }
+        let others = options.skip_app
+            || options.session_lock
+            || options.stall
+            || options.raw_diag
+            || options.mouse_diag
+            || options.overlay_latency
+            || options.only.is_some();
+        if options.installer.is_some() && others {
+            return Err(format!("--installer runs on its own\n\n{USAGE}"));
         }
         Ok(options)
     }
 }
 
 const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session-lock] [--stall] [--raw-diag] [--mouse-diag] [--overlay-latency] [--no-dashboard] [--only S2,S11]
+       cargo run -p keyclean-e2e -- --installer [SETUP.exe]
   --only IDS         run only these checks (comma-separated IDs from the report)
   --skip-app         skip the scenarios that start the app (target/debug/keyclean.exe)
   --session-lock     also lock the workstation (you'll have to sign back in); runs last
@@ -113,7 +143,8 @@ const USAGE: &str = "usage: cargo run -p keyclean-e2e -- [--skip-app] [--session
   --raw-diag         also run S25: the lost-hook check after each system shortcut (opens Game Bar)
   --mouse-diag       also run S33: you use the touchpad during a 15 s mouse-only lock (prompts)
   --overlay-latency  also run S41: overlay confirmation times over ten 1 s locks (about 45 s)
-  --no-dashboard     run S41 with no webview open: app in the tray, 16 s after each lock (about 3.5 min)";
+  --no-dashboard     run S41 with no webview open: app in the tray, 16 s after each lock (about 3.5 min)
+  --installer        run only S52-S53: install and uninstall the newest bun tauri build installer (or SETUP.exe); no lock";
 
 /// Kills this process after `RUN_LIMIT`, from outside, in case the harness hangs. Disarmed on
 /// drop.
@@ -165,7 +196,15 @@ fn main() {
 }
 
 fn run(options: &Options) -> i32 {
-    println!("KeyClean end-to-end checks (M1-M10)");
+    if let Err(e) = nothing_running() {
+        eprintln!("{e}");
+        return EXIT_SETUP;
+    }
+    if let Some(setup) = &options.installer {
+        let _watchdog = OutsideWatchdog::arm();
+        return run_installer(setup.clone());
+    }
+    println!("KeyClean end-to-end checks (M1-M11)");
     println!(
         "This locks your keyboard and mouse several times over about 5 minutes (15 minutes at \
          most)."
@@ -291,6 +330,8 @@ fn run(options: &Options) -> i32 {
                     " (S33 also needs --mouse-diag)"
                 } else if id == "S41" && !options.overlay_latency {
                     " (S41 also needs --overlay-latency or --no-dashboard)"
+                } else if id == "S52" || id == "S53" {
+                    " (S52-S53 run with --installer, on their own)"
                 } else if options.skip_app
                     && [
                         "S10", "S11", "S12", "S15", "S21", "S23", "S34", "S35", "S36", "S37",
@@ -397,6 +438,54 @@ fn run(options: &Options) -> i32 {
         );
     }
 
+    report.print(started.elapsed());
+    if let Some(path) = report.write_next_to_exe(started.elapsed()) {
+        println!("Report written to {}", path.display());
+    }
+    if report.failed() == 0 { 0 } else { EXIT_FAILED }
+}
+
+/// Fails when a `keyclean.exe` is running, naming its path: with single instance it would take
+/// over every app launch, and its two processes would spoil the process counts.
+fn nothing_running() -> Result<(), String> {
+    if scenarios::keyclean_processes()? == 0 {
+        return Ok(());
+    }
+    let paths = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Process keyclean -ErrorAction SilentlyContinue | ForEach-Object { $_.Path } | Sort-Object -Unique",
+        ])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    Err(format!(
+        "KeyClean is already running ({paths}). Quit it from its tray icon first; an installed \
+         copy started at sign-in counts too."
+    ))
+}
+
+/// `--installer`: S52-S53 only, no lock.
+fn run_installer(setup: Option<std::path::PathBuf>) -> i32 {
+    println!("KeyClean installer checks (M11): S52-S53");
+    println!("  - Installs KeyClean into a temporary folder, starts it, then uninstalls it.");
+    println!("  - No input lock. Leave the installer windows alone; takes under a minute.");
+    let started = Instant::now();
+    let mut report = Report::new();
+    report.mark_partial("S52,S53");
+    if let Err(e) = installer::run(setup, &mut report) {
+        eprintln!("{e}");
+        return EXIT_SETUP;
+    }
     report.print(started.elapsed());
     if let Some(path) = report.write_next_to_exe(started.elapsed()) {
         println!("Report written to {}", path.display());
