@@ -111,6 +111,7 @@ bun run lint
 bun run format               # / format:check
 bunx merlin                  # interactive commit wizard
 bun scripts/tray-icons.mjs   # re-render the tray icon PNGs after editing assets/tray/*.svg
+bun scripts/app-icon.mjs     # rebuild icon.ico and the bundle PNGs from the brand draft + assets/icon/*.svg
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock (add `-- --mouse` for the mouse too)
 cargo run -p keyclean-e2e    # Max only — automated M1-M10 checks (~6 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33, --overlay-latency adds S41, plus --no-dashboard for S41 with no webview open)
 ```

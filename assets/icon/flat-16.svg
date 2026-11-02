@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- KeyClean app icon, flat version for 16 px: rounded black keycap, amber K, amber base line. Draft; Max may redraw it. -->
+  <rect x="1.5" y="1.5" width="13" height="11" rx="2.5" fill="#1c1916" stroke="#6b5a48"/>
+  <rect x="2" y="14" width="12" height="2" rx="1" fill="#f5a54a"/>
+  <g fill="none" stroke="#f5a54a" stroke-width="1.8">
+    <path d="M6 3.5V10.5" stroke-width="2"/>
+    <path d="M6.6 7.6L10.6 3.8"/>
+    <path d="M7.6 6.8L11 10.5"/>
+  </g>
+</svg>
