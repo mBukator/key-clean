@@ -26,7 +26,7 @@ Status values: **not started**, **in progress**, **code-complete - awaiting manu
 | M8 System tray                                 | §55 Phase 4 | **done**                                    |
 | M9 Global shortcut                             | §55 Phase 4 | **done**                                    |
 | M10 Start with Windows + notifications         | §55 Phase 4 | **done**                                    |
-| M11 Packaging                                  | §55 Phase 4 | not started                                 |
+| M11 Packaging                                  | §55 Phase 4 | built, awaiting Max's manual test           |
 | M12 Open-source release                        | §56 Phase 5 | not started                                 |
 | M13 Keyboard diagnostics                       | §57 Phase 6 | not started                                 |
 | M14 Advanced device management                 | §58 Phase 7 | not started                                 |
@@ -533,15 +533,36 @@ Acceptance:
 
 ### M11 - Packaging
 
-Status: not started. Manual test: `docs/testing/manual/M11.md`.
+Status: built, awaiting Max's manual test. Verification: `cargo run -p keyclean-e2e -- --installer`
+(S52-S53) and `docs/testing/manual/M11.md`. Decisions: ADR 0019 (KeyClean's own copy of Tauri's
+NSIS template). Research: `docs/research/m11-packaging.md`.
 
 Scope: NSIS installer, `installMode: currentUser`, WebView2 `downloadBootstrapper`, uninstaller.
 
+Done in code:
+
+- [x] NSIS installer for the current user (`%LOCALAPPDATA%\KeyClean`, `asInvoker`, no admin
+      prompt), WebView2 `downloadBootstrapper`, publisher mBukator; unsigned (ADR 0019).
+- [x] Start menu shortcut with the AppUserModelID `io.github.mbukator.keyclean` (Tauri's template);
+      no desktop shortcut unless ticked.
+- [x] "Start KeyClean when I sign in", ticked for a new install; an existing install keeps its
+      choice; the value is `run_command`'s string, HKCU only; `StartupApproved` never written.
+- [x] Another version is installed over without running its uninstaller, keeping the startup
+      entry, Task Manager's record, the shortcuts and the settings.
+- [x] Install, upgrade and uninstall close a running KeyClean first (asked; `WM_CLOSE`, then
+      Restart Manager).
+- [x] Uninstall removes our `Run` value and its `StartupApproved` record, the shortcut, the folder,
+      the install record and WebView2's cache; settings only when ticked.
+- [x] App icon (`.ico` 16-256 px; flat art at 16-24 px, drafted).
+- [x] Tests keeping the installer in step with `run_command`, `strings.json` and the pinned CLI;
+      harness S52-S53 and the running-copy check; manual-trigger `installer.yml`.
+- [ ] Flat 16-24 px icon art from Max (or his OK on the draft).
+
 Acceptance:
 
-- [ ] Windows 10 works
-- [ ] Windows 11 works
-- [ ] Install and uninstall leave no lock state or leftovers
+- [ ] Windows 10 works (M11.md W2-W5, in a VM)
+- [ ] Windows 11 works (M11.md steps 0-9)
+- [ ] Install and uninstall leave no lock state or leftovers (S53; M11.md step 9)
 
 ## Phase 5 - Open-source release (§56)
 

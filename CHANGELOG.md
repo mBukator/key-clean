@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Start minimized: a start at sign-in stays in the tray with no window (on by default). A manual launch still opens the dashboard.
 - Notifications (can be turned off): how a lock ended when no dashboard is open, the start shortcut or the engine failing at a start at sign-in, and an engine that can't be restarted. None during a lock, none for your own unlock, never key data.
 - Harness checks S49-S51 (a start at sign-in, a second start at sign-in, a toast after a lock), the M10 manual test, research note and ADR 0018.
+- Installer (M11): `bun tauri build` makes `KeyClean_<version>_x64-setup.exe`, which installs KeyClean for the current user without an admin prompt and adds a Start menu shortcut, so notifications show as KeyClean. It downloads WebView2 only on a machine without it. Unsigned for now (ADR 0019).
+- "Start KeyClean when I sign in" in the installer, ticked for a new install; an upgrade keeps your choice, Task Manager's choice and your settings.
+- Uninstaller: closes a running KeyClean first (ending any lock), then removes the startup entry and its Task Manager record, the shortcut, the folder and WebView2's cache. Your settings go only if you tick "Also delete my KeyClean settings". Another copy's startup entry is left alone.
+- App icon: the satin-black keycap with an amber K, with flat art at 16-24 px (`bun scripts/app-icon.mjs`).
+- Harness checks S52-S53 (`--installer`: a silent install and a silent uninstall with KeyClean running), a manual-trigger CI workflow that builds the installer, the M11 manual test, research note and ADR 0019.
 
 ### Changed
 
@@ -90,6 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `list_keyboards` command is now `list_devices` and returns every input device with its kind and capability.
 - The watchdog ends a hung engine with `TerminateProcess` instead of `abort()`, which went through Windows Error Reporting and kept the hook installed about 5 s longer.
 - Harness check S6 no longer sends Win+G: it opens the Xbox Game Bar despite the lock, which blinds the lost-hook check while the overlay is open (documented limitation).
+- Every harness run first checks that no KeyClean is running and names its path if one is: a running copy, such as an installed one started at sign-in, would take over the harness's launches.
+- `@tauri-apps/cli` is pinned to an exact version, since KeyClean ships its own copy of the CLI's installer template.
 
 ### Fixed
 

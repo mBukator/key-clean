@@ -23,8 +23,9 @@ Chosen by Max on 2026-10-07 from images he generated; both may be committed.
 | `brand/banner-draft.png`    | Dark keyboard from above, Ctrl, Alt and K lit amber, empty left side for the title | README banner and social preview, title added as SVG text | M12       |
 | `brand/tray-icon-draft.png` | White keycap, front view: wider skirt, top face cut out, an LED dot, no legend     | Tray icon (traced in `assets/tray/`)                      | M8        |
 
-- At 16 and 20 px the 3D key turns into a blob, so those `.ico` sizes get a hand-drawn flat
-  version: rounded cap, amber K, amber base line.
+- At 16-24 px the 3D key turns into a blob, so those `.ico` sizes get a hand-drawn flat
+  version: rounded cap, amber K, amber base line. M11 built the `.ico` (`bun scripts/app-icon.mjs`)
+  with drafted flat art at 16, 20 and 24 px in `assets/icon/`, for Max to redraw or approve.
 - The tray icon is Max's own drawing (`brand/tray-icon-draft.png`, added 2026-10-12), traced as
   SVG in `assets/tray/`: white for a dark taskbar, near-black for a light one, and the same shape in amber while
   locked.

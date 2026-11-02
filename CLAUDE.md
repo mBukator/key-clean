@@ -101,7 +101,7 @@ Full rules and examples: `docs/development/git-workflow.md`. Enforced by commitl
 bun install                  # deps + husky hooks
 bun tauri dev                # run the app (Max only — it can engage a real lock)
 bun run build                # frontend → dist/ (src-tauri needs dist/ to compile)
-bun tauri build              # release build -> target/release/keyclean.exe; bundling off until M11
+bun tauri build              # release exe + installer -> target/release/bundle/nsis/KeyClean_<ver>_x64-setup.exe
 cargo build -p keyclean --features tauri/custom-protocol   # debug exe with the UI embedded (harness, manual tests; run bun run build first)
 cargo test --workspace       # pure-logic tests (never installs hooks)
 cargo clippy --workspace --all-targets -- -D warnings
@@ -114,6 +114,7 @@ bun scripts/tray-icons.mjs   # re-render the tray icon PNGs after editing assets
 bun scripts/app-icon.mjs     # rebuild icon.ico and the bundle PNGs from the brand draft + assets/icon/*.svg
 cargo run -p keyclean-win --example lock_smoke   # Max only — engages a dev-capped lock (add `-- --mouse` for the mouse too)
 cargo run -p keyclean-e2e    # Max only — automated M1-M10 checks (~6 min, locks repeatedly; --stall adds S20, --mouse-diag adds S33, --overlay-latency adds S41, plus --no-dashboard for S41 with no webview open)
+cargo run -p keyclean-e2e -- --installer   # Max only — S52-S53: installs + uninstalls the newest installer (no lock)
 ```
 
 If `cargo` isn't found in a shell started before Rust was installed, prepend `$HOME/.cargo/bin` to PATH (also needed for git hooks).
