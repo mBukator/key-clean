@@ -201,5 +201,10 @@
     "duration.customFormat": "Enter whole minutes, and seconds from 0 to 59.",
     "duration.customOutOfRange": "That length is outside the range above.",
     "separator.dot": " · ",
-    "dev.capSpoken": ": {hint}"
+    "dev.capSpoken": ": {hint}",
+    "installer.startAtSignIn": "Start KeyClean when I sign in",
+    "installer.closeRunning": "KeyClean is running and will be closed. If a lock is in progress, it ends and your keyboard and mouse work again.",
+    "installer.stillRunning": "KeyClean is still running. Quit it from its tray icon, then try again.",
+    "installer.deleteSettings": "Also delete my KeyClean settings",
+    "installer.startupPathTooLong": "KeyClean can't start when you sign in from this folder: its path is too long."
 }

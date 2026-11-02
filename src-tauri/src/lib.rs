@@ -12,6 +12,8 @@ mod dashboard;
 mod devices;
 mod general;
 mod i18n;
+#[cfg(test)]
+mod installer;
 mod notify;
 mod overlay;
 mod settings;
