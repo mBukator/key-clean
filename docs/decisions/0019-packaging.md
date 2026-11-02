@@ -1,14 +1,16 @@
 # ADR 0019 - Packaging: the NSIS installer and uninstaller
 
-- Status: Accepted, 2026-11-02. Max approved the M11 plan (D1-D12 as recommended, publisher and
-  copyright as proposed) on 2026-11-02. Pending Max's OK, settled during the build: the startup
-  checkbox sits at the right of the install-location page, under the folder box (the page has no
-  room below it); another version is installed over without its uninstaller, and a passive
-  install never uninstalls first; "Uninstall" of the same version stays a clean reinstall; another
-  folder during an upgrade leaves the old one; the startup check also covers the previous
-  install's folder; the drafted 16-24 px flat icon art; `@tauri-apps/cli` pinned to an exact
-  version; the harness's running-copy check and its refusal to run S52-S53 while KeyClean is
-  installed; the draft's 99 % opaque keycap made opaque in the icon.
+- Status: Accepted, 2026-11-02. Max approved the M11 plan (D1-D12 as recommended) on 2026-11-02.
+  Pending Max's OK, settled during the build: the publisher name `mBukator` (also the registry
+  key `HKCU\Software\mBukator\KeyClean`); the startup checkbox at the right of the
+  install-location page, under the folder box (the page has no room below it); another version is
+  installed over without its uninstaller, which replaces the approved `/UPDATE` upgrade (changed
+  after review), and an older installer now downgrades without asking; a passive install never
+  uninstalls first; "Uninstall" of the same version is a clean reinstall; another folder during
+  an upgrade leaves the old one; the startup check also covers the previous install's folder; the
+  drafted 16-24 px flat icon art (D8, unanswered); `@tauri-apps/cli` pinned to an exact version;
+  the harness's running-copy check and its refusal to run S52-S53 while KeyClean is installed; the
+  draft's 99 % opaque keycap made opaque in the icon.
 - Deciders: Max
 - Related: M11; §3, §29, §41-§43, §55, §60 "Windows 10 works", "Windows 11 works"; invariants 1, 2,
   9, 12; ADR 0001 (WebView2), 0005 (`asInvoker`), 0009 (engine process), 0016 (tray), 0018
@@ -73,7 +75,9 @@ it don't fit KeyClean:
 - **Another version is installed over.** The reinstall page is skipped and the old uninstaller
   isn't run: the files are replaced, and the startup entry, its Task Manager record, the
   shortcuts and the settings stay. Cancelling before the files are copied leaves the old version
-  as it was.
+  as it was. An older installer downgrades the same way, without the template's "a newer
+  version is installed" page; with `allowDowngrades: false` that page was what refused, so a
+  test keeps `allowDowngrades` unset until the check is added back here.
 - **The same version** gets the template's page: "Add/Reinstall" installs over; "Uninstall" is a
   clean reinstall: a real uninstall (below, Task Manager's record included), then this installer
   carries on, with the checkbox as it was before. A passive install (`/P`) has no page and

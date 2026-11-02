@@ -221,6 +221,12 @@ fn the_bundle_is_a_current_user_nsis_installer() {
         windows["webviewInstallMode"]["type"],
         "downloadBootstrapper"
     );
+    // Another version is installed over without the reinstall page, which was what refused a
+    // downgrade when downgrades are off; installer.nsi would need that check back first.
+    assert!(
+        windows.get("allowDowngrades").is_none(),
+        "allowDowngrades: see ADR 0019"
+    );
     let nsis = &windows["nsis"];
     // No elevation (ADR 0005): the template asks for admin rights only for perMachine.
     assert_eq!(nsis["installMode"], "currentUser");
